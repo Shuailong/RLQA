@@ -40,7 +40,7 @@ class RLDocRanker(object):
         """
         """
         doc_scores = [np.random.random() for i in range(k)]
-        doc_ids = [np.random.randint(self.num_docs) for i in range(k)]
+        doc_ids = [str(np.random.randint(self.num_docs)) for i in range(k)]
         return doc_ids, doc_scores
 
     def batch_closest_docs(self, queries, k=1, num_workers=None):

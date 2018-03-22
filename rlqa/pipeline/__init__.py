@@ -7,13 +7,13 @@
 
 import os
 from ..tokenizers import CoreNLPTokenizer
-from ..retriever import TfidfDocRanker
+from ..retriever import RLDocRanker
 from ..retriever import DocDB
 from .. import DATA_DIR
 
 DEFAULTS = {
     'tokenizer': CoreNLPTokenizer,
-    'ranker': TfidfDocRanker,
+    'ranker': RLDocRanker,
     'db': DocDB,
     'reader_model': os.path.join(DATA_DIR, 'reader/multitask.mdl'),
 }
@@ -24,4 +24,4 @@ def set_default(key, value):
     DEFAULTS[key] = value
 
 
-from .drqa import DrQA
+from .rlqa import RLQA

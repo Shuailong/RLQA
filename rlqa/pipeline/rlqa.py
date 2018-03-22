@@ -4,7 +4,7 @@
 #
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-"""Full DrQA pipeline."""
+"""Full RLQA pipeline."""
 
 import torch
 import regex
@@ -54,11 +54,11 @@ def tokenize_text(text):
 
 
 # ------------------------------------------------------------------------------
-# Main DrQA pipeline
+# Main RLQA pipeline
 # ------------------------------------------------------------------------------
 
 
-class DrQA(object):
+class RLQA(object):
     # Target size for squashing short paragraphs together.
     # 0 = read every paragraph independently
     # infty = read all paragraphs together
