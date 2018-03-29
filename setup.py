@@ -15,13 +15,17 @@ with open('LICENSE') as f:
 with open('requirements.txt') as f:
     reqs = f.read()
 
+
 setup(
     name='rlqa',
     version='0.1.0',
     description='Reinforcement Learning Query Reformulation',
+    author='Liang Shuailong',
+    author_email='liangshuailong@gmail.com',
     long_description=readme,
     license=license,
     python_requires='>=3.5',
     packages=find_packages(exclude=('data')),
     install_requires=reqs.strip().split('\n'),
+
 )

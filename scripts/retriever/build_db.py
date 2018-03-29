@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
+# encoding: utf-8
 # Copyright 2017-present, Facebook, Inc.
 # All rights reserved.
 #

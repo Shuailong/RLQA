@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
+# encoding: utf-8
 # Copyright 2017-present, Facebook, Inc.
 # All rights reserved.
 #
@@ -6,15 +7,20 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
+from ..tokenizers import CoreNLPTokenizer
 from .. import DATA_DIR
 
 DEFAULTS = {
     'db_path': os.path.join(DATA_DIR, 'wikipedia/docs.db'),
-    'rl_path': os.path.join(
+    'model': os.path.join(
         DATA_DIR,
-        'rlmodels/rlmodels.model'
+        'rlmodels/best.model'
     ),
-    'tokenizer': 'corenlp'
+    'tokenizer': CoreNLPTokenizer,
+    'tfidf_path': os.path.join(
+        DATA_DIR,
+        'wikipedia/docs-tfidf-ngram=2-hash=16777216-tokenizer=simple.npz'
+    ),
 }
 
 
@@ -27,9 +33,17 @@ def get_class(name):
     if name == 'sqlite':
         return DocDB
     if name == 'rl':
-        return RLDocRanker
-    raise RuntimeError('Invalid retriever class: %s' % name)
+        return RLDocRetriever
+    if name == 'tfidf':
+        return
+    raise RuntimeError(f'Invalid retriever class: {name}')
 
 
+from .model import RLDocRetriever
+from .retriever import Retriever
+from .tfidf_doc_ranker import TfidfDocRanker
 from .doc_db import DocDB
-from .rl_doc_ranker import RLDocRanker
+from . import config
+from . import vector
+from . import data
+from . import utils

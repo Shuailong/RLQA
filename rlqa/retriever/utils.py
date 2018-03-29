@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
+# encoding: utf-8
 # Copyright 2017-present, Facebook, Inc.
 # All rights reserved.
 #
@@ -6,8 +7,54 @@
 # LICENSE file in the root directory of this source tree.
 """Various retriever utilities."""
 
-import regex
+import json
+import time
+import string
+import logging
 import unicodedata
+import regex as re
+from collections import Counter
+
+import numpy as np
+import scipy.sparse as sp
+from sklearn.utils import murmurhash3_32
+
+from .data import Dictionary
+
+
+logger = logging.getLogger(__name__)
+
+
+# ------------------------------------------------------------------------------
+# Sparse matrix saving/loading helpers.
+# ------------------------------------------------------------------------------
+
+
+def save_sparse_csr(filename, matrix, metadata=None):
+    data = {
+        'data': matrix.data,
+        'indices': matrix.indices,
+        'indptr': matrix.indptr,
+        'shape': matrix.shape,
+        'metadata': metadata,
+    }
+    np.savez(filename, **data)
+
+
+def load_sparse_csr(filename):
+    loader = np.load(filename)
+    matrix = sp.csr_matrix((loader['data'], loader['indices'],
+                            loader['indptr']), shape=loader['shape'])
+    return matrix, loader['metadata'].item(0) if 'metadata' in loader else None
+
+
+# ------------------------------------------------------------------------------
+# Token hashing.
+# ------------------------------------------------------------------------------
+
+def hash(token, num_buckets):
+    """Unsigned 32 bit murmurhash for feature hashing."""
+    return murmurhash3_32(token, positive=True) % num_buckets
 
 
 # ------------------------------------------------------------------------------
@@ -44,8 +91,157 @@ def normalize(text):
 def filter_word(text):
     """Take out english stopwords, punctuation, and compound endings."""
     text = normalize(text)
-    if regex.match(r'^\p{P}+$', text):
+    if re.match(r'^\p{P}+$', text):
         return True
     if text.lower() in STOPWORDS:
         return True
     return False
+
+
+def filter_ngram(gram, mode='any'):
+    """Decide whether to keep or discard an n-gram.
+
+    Args:
+        gram: list of tokens (length N)
+        mode: Option to throw out ngram if
+          'any': any single token passes filter_word
+          'all': all tokens pass filter_word
+          'ends': book-ended by filterable tokens
+    """
+    filtered = [filter_word(w) for w in gram]
+    if mode == 'any':
+        return any(filtered)
+    elif mode == 'all':
+        return all(filtered)
+    elif mode == 'ends':
+        return filtered[0] or filtered[-1]
+    else:
+        raise ValueError('Invalid mode: %s' % mode)
+
+
+# ------------------------------------------------------------------------------
+# Data loading
+# ------------------------------------------------------------------------------
+
+
+def load_data(filename):
+    """Load examples from preprocessed file.
+    One example per line, JSON encoded.
+    """
+    # Load JSON lines
+    with open(filename) as f:
+        examples = [json.loads(line) for line in f]
+
+    return examples
+
+
+# ------------------------------------------------------------------------------
+# Dictionary building
+# ------------------------------------------------------------------------------
+
+def index_embedding_words(embedding_file):
+    """Put all the words in embedding_file into a set."""
+    words = set()
+    with open(embedding_file, encoding='utf-8') as f:
+        for line in f:
+            w = Dictionary.normalize(line.rstrip().split(' ')[0])
+            words.add(w)
+    return words
+
+
+def load_words(args, examples):
+    """Iterate and index all the words in examples (questions)."""
+    def _insert(iterable):
+        for w in iterable:
+            w = Dictionary.normalize(w)
+            if valid_words and w not in valid_words:
+                continue
+            words.add(w)
+
+    if args.restrict_vocab and args.embedding_file:
+        logger.info(f'Restricting to words in {args.embedding_file}')
+        valid_words = index_embedding_words(args.embedding_file)
+        logger.info(f'Num words in set = {len(valid_words)}')
+    else:
+        valid_words = None
+
+    words = set()
+    for ex in examples:
+        _insert(ex['question'])
+    return words
+
+
+def build_word_dict(args, examples):
+    """Return a dictionary from question and document words in
+    provided examples.
+    """
+    word_dict = Dictionary()
+    for w in load_words(args, examples):
+        word_dict.add(w)
+    return word_dict
+
+
+def top_question_words(args, examples, word_dict):
+    """Count and return the most common question words in provided examples."""
+    word_count = Counter()
+    for ex in examples:
+        for w in ex['question']:
+            w = Dictionary.normalize(w)
+            if w in word_dict:
+                word_count.update([w])
+    return word_count.most_common(args.tune_partial)
+
+
+# ------------------------------------------------------------------------------
+# Utility classes
+# ------------------------------------------------------------------------------
+
+class AverageMeter(object):
+    """Computes and stores the average and current value."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+
+class Timer(object):
+    """Computes elapsed time."""
+
+    def __init__(self):
+        self.running = True
+        self.total = 0
+        self.start = time.time()
+
+    def reset(self):
+        self.running = True
+        self.total = 0
+        self.start = time.time()
+        return self
+
+    def resume(self):
+        if not self.running:
+            self.running = True
+            self.start = time.time()
+        return self
+
+    def stop(self):
+        if self.running:
+            self.running = False
+            self.total += time.time() - self.start
+        return self
+
+    def time(self):
+        if self.running:
+            return self.total + time.time() - self.start
+        return self.total

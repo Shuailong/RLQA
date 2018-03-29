@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
+# encoding: utf-8
 # Copyright 2017-present, Facebook, Inc.
 # All rights reserved.
 #
@@ -10,7 +11,10 @@ import argparse
 import code
 import prettytable
 import logging
-from rlqa import retriever
+
+import torch
+
+from rlqa.retriever import RLDocRetriever
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -20,11 +24,35 @@ console.setFormatter(fmt)
 logger.addHandler(console)
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--model', type=str, default=None)
+
+parser.add_argument('--model', type=str, default=None,
+                    help='Path to model to use')
+parser.add_argument('--tokenizer', type=str, default=None,
+                    help=("String option specifying tokenizer type to use "
+                          "(e.g. 'corenlp')"))
+parser.add_argument('--no-cuda', action='store_true',
+                    help='Use CPU only')
+parser.add_argument('--gpu', type=int, default=-1,
+                    help='Specify GPU device id to use')
+
 args = parser.parse_args()
 
-logger.info('Initializing ranker...')
-ranker = retriever.get_class('rl')(model_path=args.model)
+args.cuda = not args.no_cuda and torch.cuda.is_available()
+if args.cuda:
+    torch.cuda.set_device(args.gpu)
+    logger.info(f'CUDA enabled (GPU {args.gpu})')
+else:
+    logger.info('Running on CPU only.')
+
+logger.info('Initializing retriever...')
+retriever = Retriever(
+    args.model,
+    args.tokenizer,
+    args.embedding_file,
+    args.num_workers,
+)
+if args.cuda:
+    retriever.cuda()
 
 
 # ------------------------------------------------------------------------------
@@ -32,18 +60,18 @@ ranker = retriever.get_class('rl')(model_path=args.model)
 # ------------------------------------------------------------------------------
 
 
-def process(query, k=1):
-    doc_names, doc_scores = ranker.closest_docs(query, k)
+def process(question, k=1):
+    results, _ = retriever.closest_docs(question, k)
     table = prettytable.PrettyTable(
         ['Rank', 'Doc Id', 'Doc Score']
     )
     for i in range(len(doc_names)):
-        table.add_row([i + 1, doc_names[i], '%.5g' % doc_scores[i]])
+        table.add_row([i + 1, doc_names[i], f'{doc_scores[i]:.5g}'])
     print(table)
 
 
 banner = """
-Interactive TF-IDF DrQA Retriever
+Interactive RLQA Retriever
 >> process(question, k=1)
 >> usage()
 """

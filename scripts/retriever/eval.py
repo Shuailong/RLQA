@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
+# encoding: utf-8
 # Copyright 2017-present, Facebook, Inc.
 # All rights reserved.
 #
@@ -6,81 +7,16 @@
 
 """Evaluate the accuracy of the RLQA retriever module."""
 
-import regex as re
 import logging
 import argparse
 import json
 import time
 import os
 
-from multiprocessing import Pool as ProcessPool
-from multiprocessing.util import Finalize
-from functools import partial
-from rlqa import retriever, tokenizers
-from rlqa.retriever import utils
+from tqdm import tqdm
+import torch
 
-# ------------------------------------------------------------------------------
-# Multiprocessing target functions.
-# ------------------------------------------------------------------------------
-
-PROCESS_TOK = None
-PROCESS_DB = None
-
-
-def init(tokenizer_class, tokenizer_opts, db_class, db_opts):
-    global PROCESS_TOK, PROCESS_DB
-    PROCESS_TOK = tokenizer_class(**tokenizer_opts)
-    Finalize(PROCESS_TOK, PROCESS_TOK.shutdown, exitpriority=100)
-    PROCESS_DB = db_class(**db_opts)
-    Finalize(PROCESS_DB, PROCESS_DB.close, exitpriority=100)
-
-
-def regex_match(text, pattern):
-    """Test if a regex pattern is contained within a text."""
-    try:
-        pattern = re.compile(
-            pattern,
-            flags=re.IGNORECASE + re.UNICODE + re.MULTILINE,
-        )
-    except BaseException:
-        return False
-    return pattern.search(text) is not None
-
-
-def has_answer(answer, doc_id, match):
-    """Check if a document contains an answer string.
-
-    If `match` is string, token matching is done between the text and answer.
-    If `match` is regex, we search the whole text with the regex.
-    """
-    global PROCESS_DB, PROCESS_TOK
-    text = PROCESS_DB.get_doc_text(doc_id)
-    text = utils.normalize(text)
-    if match == 'string':
-        # Answer is a list of possible strings
-        text = PROCESS_TOK.tokenize(text).words(uncased=True)
-        for single_answer in answer:
-            single_answer = utils.normalize(single_answer)
-            single_answer = PROCESS_TOK.tokenize(single_answer)
-            single_answer = single_answer.words(uncased=True)
-            for i in range(0, len(text) - len(single_answer) + 1):
-                if single_answer == text[i: i + len(single_answer)]:
-                    return True
-    elif match == 'regex':
-        # Answer is a regex
-        single_answer = utils.normalize(answer[0])
-        if regex_match(text, single_answer):
-            return True
-    return False
-
-
-def get_score(answer_doc, match):
-    """Search through all the top docs to see if they have the answer."""
-    answer, (doc_ids, doc_scores) = answer_doc
-    for doc_id in doc_ids:
-        if has_answer(answer, doc_id, match):
-            return 1
-    return 0
+from rlqa.retriever import Retriever
 
 
 # ------------------------------------------------------------------------------
@@ -98,13 +34,26 @@ if __name__ == '__main__':
     logger.addHandler(console)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('dataset', type=str, default=None)
-    parser.add_argument('--model', type=str, default=None)
-    parser.add_argument('--doc-db', type=str, default=None,
-                        help='Path to Document DB')
-    parser.add_argument('--tokenizer', type=str, default='regexp')
-    parser.add_argument('--n-docs', type=int, default=5)
-    parser.add_argument('--num-workers', type=int, default=None)
+    parser.add_argument('dataset', type=str, default=None,
+                        help='SQuAD-like dataset to evaluate on')
+    parser.add_argument('--model', type=str, default=None,
+                        help='Path to model to use')
+    parser.add_argument('--embedding-file', type=str, default=None,
+                        help=('Expand dictionary to use all pretrained '
+                              'embeddings in this file.'))
+    parser.add_argument('--tokenizer', type=str, default=None,
+                        help=("String option specifying tokenizer type to use "
+                              "(e.g. 'corenlp')"))
+    parser.add_argument('--num-workers', type=int, default=None,
+                        help='Number of CPU processes (for tokenizing, etc)')
+    parser.add_argument('--no-cuda', action='store_true',
+                        help='Use CPU only')
+    parser.add_argument('--gpu', type=int, default=-1,
+                        help='Specify GPU device id to use')
+    parser.add_argument('--batch-size', type=int, default=128,
+                        help='Example batching size')
+    parser.add_argument('--top_n', type=int, default=5,
+                        help='retrieve top n docs per question')
     parser.add_argument('--match', type=str, default='string',
                         choices=['regex', 'string'])
     args = parser.parse_args()
@@ -112,58 +61,46 @@ if __name__ == '__main__':
     # start time
     start = time.time()
 
-    # read all the data and store it
-    logger.info('Reading data ...')
-    questions = []
-    answers = []
-    for line in open(args.dataset):
-        data = json.loads(line)
-        question = data['question']
-        answer = data['answer']
-        questions.append(question)
-        answers.append(answer)
+    args.cuda = not args.no_cuda and torch.cuda.is_available()
+    if args.cuda:
+        torch.cuda.set_device(args.gpu)
+        logger.info('CUDA enabled (GPU %d)' % args.gpu)
+    else:
+        logger.info('Running on CPU only.')
 
     # get the closest docs for each question.
-    logger.info('Initializing ranker...')
-    ranker = retriever.get_class('rl')(model_path=args.model)
-
-    logger.info('Ranking...')
-    closest_docs = ranker.batch_closest_docs(
-        questions, k=args.n_docs, num_workers=args.num_workers
+    logger.info('Initializing retriever...')
+    retriever = Retriever(
+        args.model,
+        args.tokenizer,
+        args.embedding_file,
+        args.num_workers,
     )
-    answers_docs = zip(answers, closest_docs)
+    if args.cuda:
+        retriever.cuda()
 
-    # define processes
-    tok_class = tokenizers.get_class(args.tokenizer)
-    tok_opts = {}
-    db_class = retriever.DocDB
-    db_opts = {'db_path': args.doc_db}
-    processes = ProcessPool(
-        processes=args.num_workers,
-        initializer=init,
-        initargs=(tok_class, tok_opts, db_class, db_opts)
-    )
+    # read all the data and store it
+    logger.info('Reading data ...')
+    exmaples = []
+    for line in open(args.dataset):
+        data = json.loads(line)
+        exmaples.append((data['question'], data['answers']))
 
     # compute the scores for each pair, and print the statistics
-    logger.info('Retrieving and computing scores...')
-    get_score_partial = partial(get_score, match=args.match)
-    scores = processes.map(get_score_partial, answers_docs)
+    logger.info('Retrieving docs and computing scores...')
+
+    scores = []
+    for i in tqdm(range(0, len(exmaples), args.batch_size)):
+        _, metrics = retriever.batch_retrieve_docs(
+            zip(*exmaples[i:i + args.batch_size]), top_n=args.top_n)
+        scores.extend([m['hit'] for m in metrics])
 
     filename = os.path.basename(args.dataset)
-    stats = (
-        "\n" + "-" * 50 + "\n" +
-        "{filename}\n" +
-        "Examples:\t\t\t{total}\n" +
-        "Matches in top {k}:\t\t{m}\n" +
-        "Match % in top {k}:\t\t{p:2.2f}\n" +
-        "Total time:\t\t\t{t:2.4f} (s)\n"
-    ).format(
-        filename=filename,
-        total=len(scores),
-        k=args.n_docs,
-        m=sum(scores),
-        p=(sum(scores) / len(scores) * 100),
-        t=time.time() - start,
-    )
+    stats = "\n" + "-" * 50 + "\n"
+    # f"{filename}\n" +
+    # f"Examples:\t\t\t{len(scores)}\n" +
+    # f"Matches in top {args.top_n}:\t\t{sum(scores)}\n" +
+    # f"Match % in top {args.top_n}:\t\t{(sum(scores) / len(scores) * 100):2.2f}\n" +
+    # f"Total time:\t\t\t{time.time() - start:2.4f} (s)\n"
 
     print(stats)

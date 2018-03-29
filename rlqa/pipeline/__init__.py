@@ -7,13 +7,13 @@
 
 import os
 from ..tokenizers import CoreNLPTokenizer
-from ..retriever import RLDocRanker
+from ..retriever import Retriever
 from ..retriever import DocDB
 from .. import DATA_DIR
 
 DEFAULTS = {
     'tokenizer': CoreNLPTokenizer,
-    'ranker': RLDocRanker,
+    'ranker': Retriever,
     'db': DocDB,
     'reader_model': os.path.join(DATA_DIR, 'reader/multitask.mdl'),
 }
