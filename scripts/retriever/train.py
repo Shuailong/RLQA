@@ -16,10 +16,11 @@ import sys
 import subprocess
 import logging
 
-
 from rlqa.retriever import utils, vector, config, data
 from rlqa.retriever import RLDocRetriever
+from rlqa import tokenizers
 from rlqa import DATA_DIR as RLQA_DATA
+
 
 logger = logging.getLogger()
 
@@ -58,11 +59,11 @@ def add_train_args(parser):
     runtime.add_argument('--random-seed', type=int, default=712,
                          help=('Random seed for all numpy/torch/cuda '
                                'operations (for reproducibility)'))
-    runtime.add_argument('--num-epochs', type=int, default=10,
+    runtime.add_argument('--num-epochs', type=int, default=100,
                          help='Train data iterations')
-    runtime.add_argument('--batch-size', type=int, default=32,
+    runtime.add_argument('--batch-size', type=int, default=10,
                          help='Batch size for training')
-    runtime.add_argument('--test-batch-size', type=int, default=128,
+    runtime.add_argument('--test-batch-size', type=int, default=10,
                          help='Batch size during validation/testing')
 
     # Files
@@ -74,17 +75,15 @@ def add_train_args(parser):
     files.add_argument('--data-dir', type=str, default=DATA_DIR,
                        help='Directory of training/validation data')
     files.add_argument('--train-file', type=str,
-                       default='SQuAD-v1.1-train.txt',
+                       default='SQuAD-v1.1-train-valid.txt',
                        help='train file')
     files.add_argument('--dev-file', type=str,
                        default='SQuAD-v1.1-dev.txt',
                        help='dev file')
-    files.add_argument('--match', type=str, default='string',
-                       choices=['regex', 'string'])
     files.add_argument('--embed-dir', type=str, default=EMBED_DIR,
                        help='Directory of pre-trained embedding files')
     files.add_argument('--embedding-file', type=str,
-                       default='glove.840B.300d.txt',
+                       default='glove.6B.300d.txt',
                        help='Space-separated pretrained embeddings file')
 
     # Saving + loading
@@ -98,12 +97,14 @@ def add_train_args(parser):
                                 'include training/dev words of new data')
     # Data preprocessing
     preprocess = parser.add_argument_group('Preprocessing')
-    preprocess.add_argument('--uncased-question', type='bool', default=False,
+    preprocess.add_argument('--uncased-question', type='bool', default=True,
                             help='Question words will be lower-cased')
-    preprocess.add_argument('--uncased-doc', type='bool', default=False,
+    preprocess.add_argument('--uncased-doc', type='bool', default=True,
                             help='Document words will be lower-cased')
-    preprocess.add_argument('--restrict-vocab', type='bool', default=True,
+    preprocess.add_argument('--restrict-vocab', type='bool', default=False,
                             help='Only use pre-trained words in embedding_file')
+    preprocess.add_argument('--restrict-vocab-size', type=int, default=None,
+                            help='Only use this number of external vocabulary')
     preprocess.add_argument('--tokenizer', type=str, default='corenlp')
 
     # General
@@ -163,6 +164,11 @@ def set_defaults(args):
             logger.warning('WARN: fix_embeddings set to False '
                            'as embeddings are random.')
             args.fix_embeddings = False
+
+    # Make sure ranker return more docs than candidate docs to return to the reformulator
+    if args.ranker_doc_max < args.candidate_doc_max:
+        raise RuntimeError('ranker-doc-max >= candidate-doc-max.')
+
     return args
 
 
@@ -171,21 +177,23 @@ def set_defaults(args):
 # ------------------------------------------------------------------------------
 
 
-def init_from_scratch(args, train_exs, dev_exs):
+def init_from_scratch(args, tokenizer, train_exs, dev_exs):
     """New model, new data, new dictionary."""
 
     # Build a dictionary from the data questions + words (train/dev splits)
     logger.info('-' * 100)
     logger.info('Build dictionary')
-    word_dict = utils.build_word_dict(args, train_exs + dev_exs)
-    logger.info(f'Num words = {len(word_dict)}')
+    word_dict = utils.build_word_dict(args, tokenizer, train_exs + dev_exs)
+    logger.info(f'Num words in dataset = {len(word_dict)}')
 
     # Initialize model
     model = RLDocRetriever(config.get_model_args(args), word_dict)
 
     # Load pretrained embeddings for words in dictionary
     if args.embedding_file:
-        model.load_embeddings(word_dict.tokens(), args.embedding_file)
+        words = utils.index_embedding_words(args.embedding_file)
+        model.expand_dictionary(words)
+        model.load_embeddings(model.word_dict, args.embedding_file)
 
     return model
 
@@ -222,7 +230,7 @@ def train(args, data_loader, model, global_stats):
 # ------------------------------------------------------------------------------
 
 
-def validate(args, data_loader, model, global_stats, mode, match):
+def validate(args, data_loader, model, global_stats, mode):
     """Run one full validation.
     """
     eval_time = utils.Timer()
@@ -230,17 +238,17 @@ def validate(args, data_loader, model, global_stats, mode, match):
 
     # Make predictions
     examples = 0
-    for ex in data_loader:
+    for idx, ex in enumerate(data_loader):
         batch_size = len(ex[0])
         results, metrics = model.retrieve(ex)
-        metrics_avg = {k: np.mean([m[k] for m in metrics]) for k in metrics[0].keys()}
+        metrics_avg = {k: np.mean([m[k] for m in metrics]).item() for k in metrics[0].keys()}
         precision.update(metrics_avg['precision'], batch_size)
         # If getting train accuracies, sample max 10k
         examples += batch_size
         if mode == 'train' and examples >= 1e4:
             break
 
-    logger.info(f'{mode} valid: Epoch = {global_stats["epoch"]} | precision = {metrics["precision"]:.2f} | ' +
+    logger.info(f'{mode} valid: Epoch = {global_stats["epoch"]} | precision = {precision.avg:.2f} | ' +
                 f'examples = {examples} | valid time = {eval_time.time():.2f} (s)')
 
     return {'precision': precision.avg}
@@ -273,13 +281,14 @@ def main(args):
     else:
         # Training starts fresh. But the model state is either pretrained or
         # newly (randomly) initialized.
+        tokenizer = tokenizers.get_class(args.tokenizer)()
         if args.pretrained:
             logger.info('Using pretrained model...')
             model = RLDocRetriever.load(args.pretrained, args)
             if args.expand_dictionary:
                 logger.info('Expanding dictionary for new data...')
                 # Add words in training + dev examples
-                words = utils.load_words(args, train_exs + dev_exs)
+                words = utils.load_words(args, tokenizer, train_exs + dev_exs)
                 added = model.expand_dictionary(words)
                 # Load pretrained embeddings for added words
                 if args.embedding_file:
@@ -287,7 +296,7 @@ def main(args):
 
         else:
             logger.info('Training model from scratch...')
-            model = init_from_scratch(args, train_exs, dev_exs)
+            model = init_from_scratch(args, tokenizer, train_exs, dev_exs)
 
         # Set up partial tuning of embeddings
         if args.tune_partial > 0:
@@ -295,7 +304,7 @@ def main(args):
             logger.info('Counting %d most frequent question words' %
                         args.tune_partial)
             top_words = utils.top_question_words(
-                args, train_exs, model.word_dict
+                args, tokenizer, train_exs, model.word_dict
             )
             for word in top_words[:5]:
                 logger.info(word)
@@ -326,7 +335,9 @@ def main(args):
                                                 args.batch_size,
                                                 shuffle=True)
     else:
-        train_sampler = torch.utils.data.sampler.RandomSampler(train_dataset)
+        # train_sampler = torch.utils.data.sampler.RandomSampler(train_dataset)
+        train_sampler = torch.utils.data.sampler.SequentialSampler(train_dataset)
+
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -405,7 +416,7 @@ if __name__ == '__main__':
         torch.cuda.manual_seed(args.random_seed)
 
     # Set logging
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
     fmt = logging.Formatter('%(asctime)s: [ %(message)s ]',
                             '%m/%d/%Y %I:%M:%S %p')
     console = logging.StreamHandler()

@@ -149,15 +149,8 @@ def index_embedding_words(embedding_file):
     return words
 
 
-def load_words(args, examples):
+def load_words(args, tokenizer, examples):
     """Iterate and index all the words in examples (questions)."""
-    def _insert(iterable):
-        for w in iterable:
-            w = Dictionary.normalize(w)
-            if valid_words and w not in valid_words:
-                continue
-            words.add(w)
-
     if args.restrict_vocab and args.embedding_file:
         logger.info(f'Restricting to words in {args.embedding_file}')
         valid_words = index_embedding_words(args.embedding_file)
@@ -167,26 +160,42 @@ def load_words(args, examples):
 
     words = set()
     for ex in examples:
-        _insert(ex['question'])
+        for word in tokenizer.tokenize(ex['question']).words():
+            word = Dictionary.normalize(word)
+            if valid_words and word not in valid_words:
+                continue
+            if args.uncased_question:
+                word = word.lower()
+            words.add(word)
+        for ans in ex['answer']:
+            for word in tokenizer.tokenize(ans).words():
+                word = Dictionary.normalize(word)
+                if valid_words and word not in valid_words:
+                    continue
+                if args.uncased_doc:
+                    word = word.lower()
+                words.add(word)
     return words
 
 
-def build_word_dict(args, examples):
+def build_word_dict(args, tokenizer, examples):
     """Return a dictionary from question and document words in
     provided examples.
     """
     word_dict = Dictionary()
-    for w in load_words(args, examples):
+    for w in load_words(args, tokenizer, examples):
         word_dict.add(w)
     return word_dict
 
 
-def top_question_words(args, examples, word_dict):
+def top_question_words(args, tokenizer, examples, word_dict):
     """Count and return the most common question words in provided examples."""
     word_count = Counter()
     for ex in examples:
-        for w in ex['question']:
+        for w in tokenizer.tokenize(ex['question']).words():
             w = Dictionary.normalize(w)
+            if args.uncased_question:
+                w = w.lower()
             if w in word_dict:
                 word_count.update([w])
     return word_count.most_common(args.tune_partial)

@@ -5,41 +5,33 @@
 #
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-"""Preprocess the SQuAD dataset for training. Do not use for now."""
+"""Preprocess the SQuAD dataset for training. Remove invalid queries."""
 
 import argparse
 import os
-import sys
 import json
-import time
+import logging
 
-from multiprocessing import Pool
-from multiprocessing.util import Finalize
-from functools import partial
-from rlqa import tokenizers
+from tqdm import tqdm
 
-# ------------------------------------------------------------------------------
-# Tokenize
-# ------------------------------------------------------------------------------
-
-TOK = None
+from rlqa.retriever import TfidfDocRanker
+from rlqa.retriever import utils
 
 
-def init(tokenizer_class, options):
-    global TOK
-    TOK = tokenizer_class(**options)
-    Finalize(TOK, TOK.shutdown, exitpriority=100)
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+fmt = logging.Formatter('%(asctime)s: [ %(message)s ]', '%m/%d/%Y %I:%M:%S %p')
+console = logging.StreamHandler()
+console.setFormatter(fmt)
+logger.addHandler(console)
 
 
-def tokenize(text):
+def is_valid(query, ranker):
     """Call the global process tokenizer on the input text."""
-    global TOK
-    return TOK.tokenize(text).words()
+    words = ranker.parse(utils.normalize(query))
+    wids = [utils.hash(w, ranker.hash_size) for w in words]
 
-
-# ------------------------------------------------------------------------------
-# Process dataset examples
-# ------------------------------------------------------------------------------
+    return len(wids) != 0
 
 
 def load_dataset(path):
@@ -49,25 +41,15 @@ def load_dataset(path):
     return output
 
 
-def process_dataset(data, tokenizer, workers=None):
-    """Iterate processing (tokenize, parse, etc) dataset multithreaded."""
-    tokenizer_class = tokenizers.get_class(tokenizer)
-    make_pool = partial(Pool, workers, initializer=init)
-    workers = make_pool(initargs=(tokenizer_class, {}))
-
-    questions = [qa['question'] for qa in data]
-    answers = [qa['answer'] for qa in data]
-    q_tokens = workers.map(tokenize, questions)
-    workers.close()
-    workers.join()
-
-    for idx in range(len(questions)):
-        question = q_tokens[idx]
-        yield {
-            'question': question,
-            'answer': answers[idx]
-        }
-
+def process_dataset(data, ranker):
+    valids, invalids = [], []
+    for qa in data:
+        q, a = qa['question'], qa['answer']
+        if is_valid(q, ranker):
+            valids.append(qa)
+        else:
+            invalids.append(qa)
+    return valids, invalids
 
 # -----------------------------------------------------------------------------
 # Commandline options
@@ -75,25 +57,31 @@ def process_dataset(data, tokenizer, workers=None):
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('data_dir', type=str, help='Path to SQuAD data directory')
-parser.add_argument('out_dir', type=str, help='Path to output file dir')
+parser.add_argument('--data_dir', type=str, help='Path to SQuAD data directory',
+                    default='data/datasets')
+parser.add_argument('--out_dir', type=str, help='Path to output file dir',
+                    default='data/datasets')
 parser.add_argument('--split', type=str, help='Filename for train/dev split',
                     default='SQuAD-v1.1-train')
-parser.add_argument('--workers', type=int, default=None)
-parser.add_argument('--tokenizer', type=str, default='corenlp')
 args = parser.parse_args()
 
-t0 = time.time()
-
 in_file = os.path.join(args.data_dir, args.split + '.txt')
-print(f'Loading dataset {in_file}', file=sys.stderr)
+logger.info(f'Loading dataset {in_file}')
 dataset = load_dataset(in_file)
 
-out_file = os.path.join(
-    args.out_dir, f'{args.split}-processed-{args.tokenizer}.txt'
-)
-print(f'Will write to file {out_file}', file=sys.stderr)
-with open(out_file, 'w') as f:
-    for ex in process_dataset(dataset, args.tokenizer, args.workers):
+valid_file = os.path.join(args.out_dir, f'{args.split}-valid.txt')
+invalid_file = os.path.join(args.out_dir, f'{args.split}-invalid.txt')
+
+logger.info('Initialize ranker...')
+ranker = TfidfDocRanker(strict=True)
+valids, invalids = process_dataset(dataset, ranker)
+
+with open(valid_file, 'w', encoding='utf-8') as f:
+    for ex in tqdm(valids, total=len(valids)):
         f.write(json.dumps(ex) + '\n')
-print(f'Total time: {time.time() - t0:.4f} (s)')
+logger.info(f'write {len(valids)} QA pairs to file {valid_file}')
+
+with open(invalid_file, 'w', encoding='utf-8') as f:
+    for ex in tqdm(invalids, total=len(invalids)):
+        f.write(json.dumps(ex) + '\n')
+logger.info(f'write {len(invalids)} QA pairs to file {invalid_file}')
