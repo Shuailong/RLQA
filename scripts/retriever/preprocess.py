@@ -5,6 +5,7 @@
 #
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
+
 """Preprocess the SQuAD dataset for training. Tokenize questions. Remove invalid queries(TFIDF ranker). Match docs"""
 
 import argparse
@@ -13,7 +14,6 @@ import json
 import logging
 
 from tqdm import tqdm
-
 from rlqa.retriever import utils
 from rlqa import tokenizers
 
@@ -66,6 +66,7 @@ def process_dataset(data, tokenizer):
             logger.warning(f'WARN: invalid question: {qa["question"]}.')
     return valids
 
+
 # -----------------------------------------------------------------------------
 # Commandline options
 # -----------------------------------------------------------------------------
@@ -78,6 +79,7 @@ parser.add_argument('--out_dir', type=str, help='Path to output file dir',
                     default='data/datasets')
 parser.add_argument('--split', type=str, help='Filename for train/dev split',
                     default='SQuAD-v1.1-train')
+
 parser.add_argument('--tokenizer', type=str, help='tokenizer to tokenize questions',
                     default='corenlp')
 args = parser.parse_args()

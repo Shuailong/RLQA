@@ -19,6 +19,7 @@ from termcolor import colored
 
 from rlqa.retriever import utils, vector, config, data
 from rlqa.retriever import RLDocRetriever
+from rlqa import tokenizers
 from rlqa import DATA_DIR as RLQA_DATA
 
 
@@ -177,7 +178,7 @@ def set_defaults(args):
 # ------------------------------------------------------------------------------
 
 
-def init_from_scratch(args, train_exs, dev_exs):
+def init_from_scratch(args, tokenizer, train_exs, dev_exs):
     """New model, new data, new dictionary."""
 
     # Build a dictionary from the data questions + words (train/dev splits)
@@ -302,13 +303,14 @@ def main(args):
     else:
         # Training starts fresh. But the model state is either pretrained or
         # newly (randomly) initialized.
+        tokenizer = tokenizers.get_class(args.tokenizer)()
         if args.pretrained:
             logger.info('Using pretrained model...')
             model = RLDocRetriever.load(args.pretrained, args)
             if args.expand_dictionary:
                 logger.info('Expanding dictionary for new data...')
                 # Add words in training + dev examples
-                words = utils.load_words(args, train_exs + dev_exs)
+                words = utils.load_words(args, tokenizer, train_exs + dev_exs)
                 added = model.expand_dictionary(words)
                 # Load pretrained embeddings for added words
                 if args.embedding_file:
@@ -316,7 +318,7 @@ def main(args):
 
         else:
             logger.info('Training model from scratch...')
-            model = init_from_scratch(args, train_exs, dev_exs)
+            model = init_from_scratch(args, tokenizer, train_exs, dev_exs)
 
         # Set up partial tuning of embeddings
         if args.tune_partial > 0:
@@ -324,7 +326,7 @@ def main(args):
             logger.info('Counting %d most frequent question words' %
                         args.tune_partial)
             top_words = utils.top_question_words(
-                args, train_exs, model.word_dict
+                args, tokenizer, train_exs, model.word_dict
             )
             for word in top_words[:5]:
                 logger.info(word)
@@ -350,7 +352,6 @@ def main(args):
     logger.info('-' * 100)
     logger.info('Make data loaders')
     train_dataset = data.RetriverDataset(train_exs)
-
     # train_sampler = torch.utils.data.sampler.RandomSampler(train_dataset)
     train_sampler = torch.utils.data.sampler.SequentialSampler(train_dataset)
 
@@ -427,7 +428,7 @@ if __name__ == '__main__':
         torch.cuda.manual_seed(args.random_seed)
 
     # Set logging
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
     fmt = logging.Formatter('%(asctime)s: [ %(message)s ]',
                             '%m/%d/%Y %I:%M:%S %p')
     console = logging.StreamHandler()
