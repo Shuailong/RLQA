@@ -15,6 +15,6 @@ def batchify(batch):
     """Gather a batch of individual examples into one batch."""
 
     questions = [ex['question'] for ex in batch]
-    answers = [ex['answer'] for ex in batch]
-    return questions, answers
+    docs_truth = [ex['doc_truth'] for ex in batch]
+    return questions, docs_truth
 

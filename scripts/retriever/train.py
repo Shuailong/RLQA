@@ -15,11 +15,12 @@ import os
 import sys
 import subprocess
 import logging
-
+from termcolor import colored
 
 from rlqa.retriever import utils, vector, config, data
 from rlqa.retriever import RLDocRetriever
 from rlqa import DATA_DIR as RLQA_DATA
+
 
 logger = logging.getLogger()
 
@@ -58,11 +59,11 @@ def add_train_args(parser):
     runtime.add_argument('--random-seed', type=int, default=712,
                          help=('Random seed for all numpy/torch/cuda '
                                'operations (for reproducibility)'))
-    runtime.add_argument('--num-epochs', type=int, default=10,
+    runtime.add_argument('--num-epochs', type=int, default=100,
                          help='Train data iterations')
-    runtime.add_argument('--batch-size', type=int, default=32,
+    runtime.add_argument('--batch-size', type=int, default=10,
                          help='Batch size for training')
-    runtime.add_argument('--test-batch-size', type=int, default=128,
+    runtime.add_argument('--test-batch-size', type=int, default=10,
                          help='Batch size during validation/testing')
 
     # Files
@@ -74,17 +75,15 @@ def add_train_args(parser):
     files.add_argument('--data-dir', type=str, default=DATA_DIR,
                        help='Directory of training/validation data')
     files.add_argument('--train-file', type=str,
-                       default='SQuAD-v1.1-train.txt',
+                       default='SQuAD-v1.1-train-corenlp-processed.txt',
                        help='train file')
     files.add_argument('--dev-file', type=str,
-                       default='SQuAD-v1.1-dev.txt',
+                       default='SQuAD-v1.1-dev-corenlp-processed.txt',
                        help='dev file')
-    files.add_argument('--match', type=str, default='string',
-                       choices=['regex', 'string'])
     files.add_argument('--embed-dir', type=str, default=EMBED_DIR,
                        help='Directory of pre-trained embedding files')
     files.add_argument('--embedding-file', type=str,
-                       default='glove.840B.300d.txt',
+                       default='glove.6B.300d.txt',
                        help='Space-separated pretrained embeddings file')
 
     # Saving + loading
@@ -98,12 +97,14 @@ def add_train_args(parser):
                                 'include training/dev words of new data')
     # Data preprocessing
     preprocess = parser.add_argument_group('Preprocessing')
-    preprocess.add_argument('--uncased-question', type='bool', default=False,
+    preprocess.add_argument('--uncased-question', type='bool', default=True,
                             help='Question words will be lower-cased')
-    preprocess.add_argument('--uncased-doc', type='bool', default=False,
+    preprocess.add_argument('--uncased-doc', type='bool', default=True,
                             help='Document words will be lower-cased')
-    preprocess.add_argument('--restrict-vocab', type='bool', default=True,
+    preprocess.add_argument('--restrict-vocab', type='bool', default=False,
                             help='Only use pre-trained words in embedding_file')
+    preprocess.add_argument('--restrict-vocab-size', type=int, default=None,
+                            help='Only use this number of external vocabulary')
     preprocess.add_argument('--tokenizer', type=str, default='corenlp')
 
     # General
@@ -112,8 +113,8 @@ def add_train_args(parser):
                          help='The evaluation metric used for model selection')
     general.add_argument('--display-iter', type=int, default=25,
                          help='Log state after every <display_iter> epochs')
-    general.add_argument('--sort-by-len', type='bool', default=True,
-                         help='Sort batches by length for speed')
+    general.add_argument('--metrics', type=str, choices=['precision', 'recall', 'F1', 'map', 'hit'],
+                         help='metrics to display when training', nargs='+')
 
 
 def set_defaults(args):
@@ -163,6 +164,11 @@ def set_defaults(args):
             logger.warning('WARN: fix_embeddings set to False '
                            'as embeddings are random.')
             args.fix_embeddings = False
+
+    # Make sure ranker return more docs than candidate docs to return to the reformulator
+    if args.ranker_doc_max < args.candidate_doc_max:
+        raise RuntimeError('ranker-doc-max >= candidate-doc-max.')
+
     return args
 
 
@@ -178,14 +184,16 @@ def init_from_scratch(args, train_exs, dev_exs):
     logger.info('-' * 100)
     logger.info('Build dictionary')
     word_dict = utils.build_word_dict(args, train_exs + dev_exs)
-    logger.info(f'Num words = {len(word_dict)}')
+    logger.info(f'Num words in dataset = {len(word_dict)}')
 
     # Initialize model
     model = RLDocRetriever(config.get_model_args(args), word_dict)
 
     # Load pretrained embeddings for words in dictionary
     if args.embedding_file:
-        model.load_embeddings(word_dict.tokens(), args.embedding_file)
+        words = utils.index_embedding_words(args.embedding_file)
+        model.expand_dictionary(words)
+        model.load_embeddings(model.word_dict, args.embedding_file)
 
     return model
 
@@ -198,15 +206,36 @@ def train(args, data_loader, model, global_stats):
     """Run through one epoch of model training with the provided data loader."""
     # Initialize meters + timers
     train_loss = utils.AverageMeter()
+
+    metrics = args.metrics
+    # meters = {k: utils.AverageMeter() for k in metrics}
+    # meters_ext = {k: utils.AverageMeter() for k in metrics}
+
     epoch_time = utils.Timer()
 
     # Run one epoch
     for idx, ex in enumerate(data_loader):
-        train_loss.update(*model.update(ex))
+        loss, batch_size, rewards, rewards_ext = model.update(ex)
+        train_loss.update(loss, batch_size)
+
+        metrics_avg = {k: np.mean([m[k] for m in rewards]).item() for k in metrics}
+        metrics_avg_ext = {k: np.mean([m[k] for m in rewards_ext]).item() for k in metrics}
+
+        # [meters[k].update(metrics_avg[k], batch_size) for k in meters]
+        # [meters_ext[k].update(metrics_avg_ext[k], batch_size) for k in meters_ext]
         if idx % args.display_iter == 0:
             logger.info(f'train: Epoch = {global_stats["epoch"]} | iter = {idx}/{ len(data_loader)} | ' +
                         f'loss = {train_loss.avg:.2f} | elapsed time = {global_stats["timer"].time():.2f} (s)')
+            metrics_avg_ext = {k: colored(f'{metrics_avg_ext[k]:.2f}', color='green')
+                               if metrics_avg[k] < metrics_avg_ext[k]
+                               else colored(f'{metrics_avg_ext[k]:.2f}', color='red')
+                               for k in metrics}
+            if len(metrics):
+                logger.info(f'baseline metrics: ' + ' | '.join([f'{k}: {metrics_avg[k]:.2f}' for k in metrics]))
+                logger.info(f'extended metrics: ' + ' | '.join([f'{k}: {metrics_avg_ext[k]}' for k in metrics]))
             train_loss.reset()
+            # [meters[k].reset() for k in meters]
+            # [meters_ext[k].reset() for k in meters_ext]
 
     logger.info(f'train: Epoch {global_stats["epoch"]} done. Time for epoch = {epoch_time.time():.2f} (s)')
 
@@ -222,28 +251,28 @@ def train(args, data_loader, model, global_stats):
 # ------------------------------------------------------------------------------
 
 
-def validate(args, data_loader, model, global_stats, mode, match):
+def validate(args, data_loader, model, global_stats, mode):
     """Run one full validation.
     """
     eval_time = utils.Timer()
-    precision = utils.AverageMeter()
+    recall = utils.AverageMeter()
 
     # Make predictions
     examples = 0
-    for ex in data_loader:
+    for idx, ex in enumerate(data_loader):
         batch_size = len(ex[0])
         results, metrics = model.retrieve(ex)
-        metrics_avg = {k: np.mean([m[k] for m in metrics]) for k in metrics[0].keys()}
-        precision.update(metrics_avg['precision'], batch_size)
+        metrics_avg = {k: np.mean([m[k] for m in metrics]).item() for k in metrics[0].keys()}
+        recall.update(metrics_avg['recall'], batch_size)
         # If getting train accuracies, sample max 10k
         examples += batch_size
         if mode == 'train' and examples >= 1e4:
             break
 
-    logger.info(f'{mode} valid: Epoch = {global_stats["epoch"]} | precision = {metrics["precision"]:.2f} | ' +
+    logger.info(f'{mode} valid: Epoch = {global_stats["epoch"]} | recall = {recall.avg:.2f} | ' +
                 f'examples = {examples} | valid time = {eval_time.time():.2f} (s)')
 
-    return {'precision': precision.avg}
+    return {'recall': recall.avg}
 
 
 # ------------------------------------------------------------------------------
@@ -321,12 +350,10 @@ def main(args):
     logger.info('-' * 100)
     logger.info('Make data loaders')
     train_dataset = data.RetriverDataset(train_exs)
-    if args.sort_by_len:
-        train_sampler = data.SortedBatchSampler(train_dataset.lengths(),
-                                                args.batch_size,
-                                                shuffle=True)
-    else:
-        train_sampler = torch.utils.data.sampler.RandomSampler(train_dataset)
+
+    # train_sampler = torch.utils.data.sampler.RandomSampler(train_dataset)
+    train_sampler = torch.utils.data.sampler.SequentialSampler(train_dataset)
+
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -336,12 +363,7 @@ def main(args):
         pin_memory=args.cuda,
     )
     dev_dataset = data.RetriverDataset(dev_exs)
-    if args.sort_by_len:
-        dev_sampler = data.SortedBatchSampler(dev_dataset.lengths(),
-                                              args.test_batch_size,
-                                              shuffle=False)
-    else:
-        dev_sampler = torch.utils.data.sampler.SequentialSampler(dev_dataset)
+    dev_sampler = torch.utils.data.sampler.SequentialSampler(dev_dataset)
     dev_loader = torch.utils.data.DataLoader(
         dev_dataset,
         batch_size=args.test_batch_size,

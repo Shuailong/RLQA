@@ -13,9 +13,10 @@ Model code.
 
 import logging
 import copy
-import regex as re
+import itertools
 
 import numpy as np
+from termcolor import colored
 
 import torch
 from torch.autograd import Variable
@@ -24,9 +25,9 @@ import torch.optim as optim
 from .config import override_model_args
 from .reformulator import Reformulator
 from .tfidf_doc_ranker import TfidfDocRanker
-from .doc_db import DocDB
-from . import utils
-from .. import tokenizers
+from .lucene_search import LuceneSearch
+from .utils import retrieve_metrics
+
 
 """RLQA Document Retrival model"""
 
@@ -57,9 +58,10 @@ class RLDocRetriever(object):
         else:
             raise RuntimeError(f'Unsupported model: {args.model_type}')
 
-        self.doc_ranker = TfidfDocRanker()
-        self.db = DocDB()
-        self.tok = tokenizers.get_class(args.tokenizer)()
+        if args.search_engine == 'lucene':
+            self.search_engine = LuceneSearch(args, word_dict)
+        else:
+            self.search_engine = TfidfDocRanker(args, word_dict)
         # Load saved state
         if state_dict:
             # Load buffer separately
@@ -212,39 +214,57 @@ class RLDocRetriever(object):
         # Train mode
         self.network.train()
 
-        questions, answers = ex
-        # retrieve docs
-        results = self.doc_ranker.batch_closest_docs(questions)
-        # reward = utils.retrieve_metrics(retrieved, answer)['precision']
-        candidate_articles = self.sample_candidate_article(results)
-        articles_text = [self.db.get_doc_text(doc_id) for (doc_id, _) in candidate_articles]
-        # vectorize questions and docs
-        question_tokens = [self.tok.tokenize(q).words() for q in questions]
-        if self.args.uncased_question:
-            question_tokens = [[w.lower() for w in q]for q in questions]
-        questions_tensors = [torch.LongTensor([self.word_dict[w] for w in q]) for q in question_tokens]
+        questions, docs_truth = ex
+        # questions: [[word]]
 
-        doc_tokens = [self.tok.tokenize(doc).words() for doc in articles_text]
-        if self.args.uncased_doc:
-            doc_tokens = [[w.lower() for w in d]for d in doc_tokens]
-        docs = [torch.LongTensor([self.word_dict[w] for w in doc]) for doc in doc_tokens]
-
+        # vectorize questions
+        questions_tensors = [torch.LongTensor([self.word_dict[w] for w in q]) for q in questions]
         # Batch questions
-        max_length = max([q.size(0) for q in questions_tensors])
-        x1 = torch.LongTensor(len(questions_tensors), max_length).zero_()
-        x1_mask = torch.ByteTensor(len(questions_tensors), max_length).fill_(1)
+        max_q_length = max([q.size(0) for q in questions_tensors])
+        x1 = torch.LongTensor(len(questions_tensors), max_q_length).zero_()
+        x1_mask = torch.ByteTensor(len(questions_tensors), max_q_length).fill_(1)
         for i, q in enumerate(questions_tensors):
             x1[i, :q.size(0)].copy_(q)
             x1_mask[i, :q.size(0)].fill_(0)
 
-        # Batch documents
-        max_length = max([d.size(0) for d in docs])
-        x2 = torch.LongTensor(len(docs), max_length).zero_()
-        x2_mask = torch.ByteTensor(len(docs), max_length).fill_(1)
+        # retrieve docs
+        question_str = [' '.join(q) for q in questions]
+        results = self.search_engine.batch_closest_docs(
+            question_str, ranker_doc_max=self.args.ranker_doc_max, candidate_doc_max=self.args.candidate_doc_max)
 
-        for i, d in enumerate(docs):
-            x2[i, :d.size(0)].copy_(d)
-            x2_mask[i, :d.size(0)].fill_(0)
+        docs_pred, term_idxs, terms = zip(*results)
+
+        rewards = [retrieve_metrics(doc_truth, doc_pred)
+                   for (doc_truth, doc_pred) in zip(docs_truth, docs_pred)]
+
+        for i in range(len(docs_truth)):
+            if np.mean([r['hit'] for r in rewards]).item() == 0:
+                logger.debug(colored(f'{" , ".join(docs_truth[i])}', color='yellow') + ' | ' + f'{" , ".join(docs_pred[i])}')
+
+
+        rewards_recall = [r['recall'] for r in rewards]
+
+        # train time: sample a doc
+        term_idxs = [term_idx[0] for term_idx in term_idxs]
+        candidate_terms = [term[0] for term in terms]
+
+        # pad head and tail with context window size
+        pad_size = (self.args.context_window_size - 1) // 2
+
+        term_idxs_pad = [[0] * pad_size + d + [0] * pad_size for d in term_idxs]
+        term_idxs_ctxs = [[d[i - pad_size:i + pad_size + 1]
+                           for i in range(len(d)) if i >= pad_size and i <= len(d) - pad_size - 1]
+                          for d in term_idxs_pad]
+        # term_idxs_ctxs: batch * terms * win_size
+        max_terms_length = max([len(doc_terms) for doc_terms in term_idxs_ctxs])
+        x2 = torch.LongTensor(len(term_idxs_ctxs), max_terms_length, self.args.context_window_size).zero_()
+        x2_mask = torch.ByteTensor(len(term_idxs_ctxs), max_terms_length).fill_(1)
+
+        for i, doc_terms in enumerate(term_idxs_ctxs):
+            x2_mask[i, :len(doc_terms)].fill_(0)
+            for j, term_contexts in enumerate(doc_terms):
+                for k, word in enumerate(term_contexts):
+                    x2[i, j, k] = term_idxs_ctxs[i][j][k]
 
         # Transfer to GPU
         if self.use_cuda:
@@ -264,27 +284,29 @@ class RLDocRetriever(object):
         # reward_baseline: batch
 
         # Compute loss and accuracies
-        additional_terms, selections = self.sample_candidate_terms(doc_tokens, probs, train=True)
+        additional_terms, selections = self.sample_candidate_terms(candidate_terms, probs, train=True)
 
-        questions_extended = [questions[i] + ' ' + ' '.join(doc_terms) for i, doc_terms in enumerate(additional_terms)]
-        results = self.doc_ranker.batch_closest_docs(questions_extended)
-
-        answer_docs = zip(answers, results)
-        rewards_extended = []
-        for answer_doc in answer_docs:
-            rewards_extended.append(self.get_score(answer_doc)['precision'])
+        questions_extended = [question_str[i] + ' ' + ' '.join(doc_terms)
+                              for i, doc_terms in enumerate(additional_terms)]
+        results = self.search_engine.batch_closest_docs(questions_extended,
+                                                        ranker_doc_max=self.args.ranker_doc_max,
+                                                        candidate_doc_max=self.args.candidate_doc_max)
+        docs_pred, _, _ = zip(*results)
+        rewards_extended = [retrieve_metrics(doc_truth, doc_pred)
+                            for (doc_truth, doc_pred) in zip(docs_truth, docs_pred)]
+        rewards_extended_rec = [r['recall'] for r in rewards_extended]
 
         losses = []
-        for i in range(len(answers)):
+        for i in range(len(questions)):
             # C_a
-            cost_a = -(rewards_extended[i] - reward_baseline[i]) * (probs.log() * selections).sum(1)[i]
+            cost_a = -(rewards_extended_rec[i] - rewards_recall[i] - reward_baseline[i]) * (probs[i].log() * selections[i]).sum()
             # C_b
-            cost_b = self.args.stablize_alpha * (rewards_extended[i] - reward_baseline[i]) ** 2
+            cost_b = self.args.stablize_alpha * (rewards_extended_rec[i] - rewards_recall[i] - reward_baseline[i]) ** 2
             # C_H
-            cost_H = -self.args.entropy_regularizer * (probs * probs.log()).sum(1)[i]
+            cost_H = -self.args.entropy_regularizer * (probs[i] * probs[i].log()).sum()
             loss = cost_a + cost_b + cost_H
             losses.append(loss)
-        losses = torch.cat(losses, dim=-1).mean(0)
+        losses = torch.cat(losses, dim=0).mean(0)
 
         # Clear gradients and run backward
         self.optimizer.zero_grad()
@@ -302,70 +324,77 @@ class RLDocRetriever(object):
         # Reset any partially fixed parameters (e.g. rare words)
         self.reset_parameters()
 
-        return loss.data[0], len(ex[0])
+        return loss.data[0], len(ex[0]), rewards, rewards_extended
 
     # --------------------------------------------------------------------------
     # Retrieval
     # --------------------------------------------------------------------------
 
     def retrieve(self, ex, top_n=1):
-        """Forward a batch of examples only to get predictions.
-
-        Args:
-            ex: the batch
-            top_n: Number of predictions to return per batch element.
-            async_pool: If provided, non-gpu post-processing will be offloaded
-              to this CPU process pool.
-        Output:
-
-        If async_pool is given, these will be AsyncResult handles.
+        """
         """
         # Eval mode
         self.network.eval()
         if len(ex) == 1:
             questions = ex
         else:
-            questions, answers = ex
+            questions, docs_truth = ex
 
-        # retrieve docss
-        results = self.doc_ranker.batch_closest_docs(questions)
-        candidate_articles = self.sample_candidate_article(results)
-        articles_text = [self.db.get_doc_text(doc_id) for (doc_id, _) in candidate_articles]
-        # vectorize questions and docs
-        question_tokens = [self.tok.tokenize(q).words() for q in questions]
-        if self.args.uncased_question:
-            question_tokens = [[w.lower() for w in q]for q in questions]
-        questions = [torch.LongTensor([self.word_dict[w] for w in q]) for q in question_tokens]
-
-        doc_tokens = [self.tok.tokenize(doc).words() for doc in articles_text]
-        if self.args.uncased_doc:
-            doc_tokens = [[w.lower() for w in d]for d in doc_tokens]
-        docs = [torch.LongTensor([self.word_dict[w] for w in doc]) for doc in doc_tokens]
-
+        # vectorize questions
+        questions_tensors = [torch.LongTensor([self.word_dict[w] for w in q]) for q in questions]
         # Batch questions
-        max_length = max([q.size(0) for q in questions])
-        x1 = torch.LongTensor(len(questions), max_length).zero_()
-        x1_mask = torch.ByteTensor(len(questions), max_length).fill_(1)
-        for i, q in enumerate(questions):
+        max_q_length = max([q.size(0) for q in questions_tensors])
+        x1 = torch.LongTensor(len(questions_tensors), max_q_length).zero_()
+        x1_mask = torch.ByteTensor(len(questions_tensors), max_q_length).fill_(1)
+        for i, q in enumerate(questions_tensors):
             x1[i, :q.size(0)].copy_(q)
             x1_mask[i, :q.size(0)].fill_(0)
 
-        # Batch documents
-        max_length = max([d.size(0) for d in docs])
-        x2 = torch.LongTensor(len(docs), max_length).zero_()
-        x2_mask = torch.ByteTensor(len(docs), max_length).fill_(1)
+        # retrieve docs
+        question_str = [' '.join(q) for q in questions]
+        results = self.search_engine.batch_closest_docs(
+            question_str, ranker_doc_max=self.args.ranker_doc_max, candidate_doc_max=self.args.candidate_doc_max)
 
-        for i, d in enumerate(docs):
-            x2[i, :d.size(0)].copy_(d)
-            x2_mask[i, :d.size(0)].fill_(0)
+        docs_pred, term_idxs, terms = zip(*results)
+
+        rewards = [retrieve_metrics(doc_truth, doc_pred)['recall']
+                   for (doc_truth, doc_pred) in zip(docs_truth, docs_pred)]
+
+        # remove empty doc terms
+        term_idxs = term_idxs[:self.args.candidate_doc_max]
+        terms = terms[:self.args.candidate_doc_max]
+
+        # eval time: use all terms
+        candidate_terms = [itertools.chain(*docs_term) for i, docs_term in enumerate(terms)]
+
+        # pad head and tail with context window size
+        pad_size = (self.args.context_window_size - 1) // 2
+        term_idxs_pad = [[[0] * pad_size + d + [0] * pad_size for d in ds] for ds in term_idxs]
+        term_idxs_ctxs = [[d[i - pad_size:i + pad_size + 1]
+                           for d in ds for i in range(len(d)) if i >= pad_size and i <= len(d) - pad_size - 1]
+                          for ds in term_idxs_pad]
+        # term_idxs_ctxs: batch * terms * win_size
+        max_terms_length = max([len(doc_terms) for doc_terms in term_idxs_ctxs])
+        x2 = torch.LongTensor(len(term_idxs_ctxs), max_terms_length, self.args.context_window_size).zero_()
+        x2_mask = torch.ByteTensor(len(term_idxs_ctxs), max_terms_length).fill_(1)
+
+        for i, doc_terms in enumerate(term_idxs_ctxs):
+            x2_mask[i, :len(doc_terms)].fill_(0)
+            for j, term_contexts in enumerate(doc_terms):
+                for k, word in enumerate(term_contexts):
+                    x2[i, j, k] = term_idxs_ctxs[i][j][k]
 
         # Transfer to GPU
         if self.use_cuda:
-            x1 = Variable(x1.cuda(async=True))
-            x2 = Variable(x2.cuda(async=True))
+            x1 = Variable(x1.cuda(async=True), volatile=True)
+            x1_mask = Variable(x1_mask.cuda(async=True), volatile=True)
+            x2 = Variable(x2.cuda(async=True), volatile=True)
+            x2_mask = Variable(x2_mask.cuda(async=True), volatile=True)
         else:
-            x1 = Variable(x1)
-            x2 = Variable(x2)
+            x1 = Variable(x1, volatile=True)
+            x1_mask = Variable(x1_mask, volatile=True)
+            x2 = Variable(x2, volatile=True)
+            x2_mask = Variable(x2_mask, volatile=True)
 
         # Run forward
         probs, _ = self.network(x1, x1_mask, x2, x2_mask)
@@ -373,71 +402,21 @@ class RLDocRetriever(object):
 
         # Compute loss and accuracies
         additional_terms, selections = self.sample_candidate_terms(
-            doc_tokens, probs, train=False, epsilon=self.args.term_epsilon)
-        questions_extended = [questions[i] + ' ' + ' '.join(doc_terms) for i, doc_terms in enumerate(additional_terms)]
-        results = self.doc_ranker.batch_closest_docs(questions_extended)
+            candidate_terms, probs, train=False, epsilon=self.args.term_epsilon)
+        questions_extended = [question_str[i] + ' ' + ' '.join(doc_terms)
+                              for i, doc_terms in enumerate(additional_terms)]
+        results = self.search_engine.batch_closest_docs(questions_extended,
+                                                        ranker_doc_max=self.args.ranker_doc_max,
+                                                        candidate_doc_max=self.args.candidate_doc_max)
 
         rewards = []
         if len(ex) == 1:
             return results, rewards
         else:
-            answer_docs = zip(answers, results)
-            for answer_doc in answer_docs:
-                rewards.append(self.get_score(answer_doc))
-            return results, rewards
-
-    def regex_match(self, text, pattern):
-        """Test if a regex pattern is contained within a text."""
-        try:
-            pattern = re.compile(
-                pattern,
-                flags=re.IGNORECASE + re.UNICODE + re.MULTILINE,
-            )
-        except BaseException:
-            return False
-        return pattern.search(text) is not None
-
-    def has_answer(self, answer, doc_id):
-        """Check if a document contains an answer string.
-
-        If `match` is string, token matching is done between the text and answer.
-        If `match` is regex, we search the whole text with the regex.
-        """
-        text = self.db.get_doc_text(doc_id)
-        text = utils.normalize(text)
-        if self.args.match == 'string':
-            # Answer is a list of possible strings
-            text = self.tok.tokenize(text).words(uncased=True)
-            if isinstance(answer, str):
-                answer = [answer]
-            for single_answer in answer:
-                single_answer = utils.normalize(single_answer)
-                single_answer = self.tok.tokenize(single_answer)
-                single_answer = single_answer.words(uncased=True)
-                for i in range(0, len(text) - len(single_answer) + 1):
-                    if single_answer == text[i: i + len(single_answer)]:
-                        return True
-        elif self.args.match == 'regex':
-            # Answer is a regex
-            single_answer = utils.normalize(answer[0])
-            if self.regex_match(text, single_answer):
-                return True
-        return False
-
-    def get_score(self, answer_doc):
-        """Search through all the top docs to see if they have the answer."""
-        answer, (doc_ids, doc_scores) = answer_doc
-        N = len(doc_ids)
-        precision, hit, MAP = None, None, None
-        TP = 0
-        for doc_id in doc_ids:
-            if self.has_answer(answer, doc_id):
-                TP += 1
-        precision = TP / N
-        if TP > 0:
-            hit = 1
-        metrics = {'precision': precision, 'map': MAP, 'hit': hit}
-        return metrics
+            docs_pred, _, _ = zip(*results)
+            rewards_extended = [retrieve_metrics(doc_truth, doc_pred)
+                                for (doc_truth, doc_pred) in zip(docs_truth, docs_pred)]
+            return docs_pred, rewards_extended
 
     @staticmethod
     def sample_candidate_terms(docs, probs, train=True, epsilon=1):
@@ -461,15 +440,6 @@ class RLDocRetriever(object):
             additional_terms.append(doc_terms)
 
         return additional_terms, selections_var
-
-    @staticmethod
-    def sample_candidate_article(results):
-        '''
-        results: output of TfidfDocRanker.batch_closest_docs
-                 [(doc_ids, doc_scores)]
-        '''
-        samples = [(doc_ids[0], doc_scores[0]) for (doc_ids, doc_scores) in results]
-        return samples
 
     def reset_parameters(self):
         """Reset any partially fixed parameters to original states."""

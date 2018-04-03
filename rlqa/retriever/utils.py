@@ -9,7 +9,6 @@
 
 import json
 import time
-import string
 import logging
 import unicodedata
 import regex as re
@@ -88,6 +87,25 @@ def normalize(text):
     return unicodedata.normalize('NFD', text)
 
 
+def clean(txt):
+    '''
+    # remove most of Wikipedia and AQUAINT markups, such as '[[', and ']]'.
+    '''
+    txt = re.sub(r'\|.*?\]\]', '', txt)  # remove link anchor
+    txt = txt.replace('&amp;', ' ').replace('&lt;', ' ').replace('&gt;', ' ')\
+        .replace('&quot;', ' ').replace('\'', ' ').replace('(', ' ')\
+        .replace(')', ' ').replace('.', ' ').replace('"', ' ')\
+        .replace(',', ' ').replace(';', ' ').replace(':', ' ')\
+        .replace('<93>', ' ').replace('<98>', ' ').replace('<99>', ' ')\
+        .replace('<9f>', ' ').replace('<80>', ' ').replace('<82>', ' ')\
+        .replace('<83>', ' ').replace('<84>', ' ').replace('<85>', ' ')\
+        .replace('<89>', ' ').replace('=', ' ').replace('*', ' ')\
+        .replace('\n', ' ').replace('!', ' ').replace('-', ' ')\
+        .replace('[[', ' ').replace(']]', ' ')
+
+    return txt
+
+
 def filter_word(text):
     """Take out english stopwords, punctuation, and compound endings."""
     text = normalize(text)
@@ -151,13 +169,6 @@ def index_embedding_words(embedding_file):
 
 def load_words(args, examples):
     """Iterate and index all the words in examples (questions)."""
-    def _insert(iterable):
-        for w in iterable:
-            w = Dictionary.normalize(w)
-            if valid_words and w not in valid_words:
-                continue
-            words.add(w)
-
     if args.restrict_vocab and args.embedding_file:
         logger.info(f'Restricting to words in {args.embedding_file}')
         valid_words = index_embedding_words(args.embedding_file)
@@ -167,7 +178,13 @@ def load_words(args, examples):
 
     words = set()
     for ex in examples:
-        _insert(ex['question'])
+        for word in ex['question']:
+            word = Dictionary.normalize(word)
+            if valid_words and word not in valid_words:
+                continue
+            if args.uncased_question:
+                word = word.lower()
+            words.add(word)
     return words
 
 
@@ -187,9 +204,61 @@ def top_question_words(args, examples, word_dict):
     for ex in examples:
         for w in ex['question']:
             w = Dictionary.normalize(w)
+            if args.uncased_question:
+                w = w.lower()
             if w in word_dict:
                 word_count.update([w])
     return word_count.most_common(args.tune_partial)
+
+
+# ------------------------------------------------------------------------------
+# Metrics
+# ------------------------------------------------------------------------------
+
+def average_precision(doc_truth, doc_pred):
+    '''Computes the average precision.
+
+    This function computes the average prescision at k between two lists of
+    items.
+
+    Parameters
+    ----------
+    actual : list
+             A list of elements that are to be predicted (order doesn't matter)
+    predicted : list
+                A list of predicted elements (order does matter)
+    k : int, optional
+        The maximum number of predicted elements
+
+    Returns
+    -------
+    score : double
+            The average precision over the input lists
+    '''
+    if not doc_truth:
+        return 0.0
+
+    score = 0.0
+    num_hits = 0.0
+
+    for i, p in enumerate(doc_pred):
+        if p in doc_truth and p not in doc_pred[:i]:
+            num_hits += 1.0
+            score += num_hits / (i + 1.0)
+
+    return score / max(1, min(len(doc_pred), len(doc_truth)))
+
+
+def retrieve_metrics(doc_truth, doc_pred):
+    """Search through all the top docs to see if they have the answer."""
+    TP = len(set(doc_truth) & set(doc_pred))
+    precision = TP / len(doc_pred)
+    recall = TP / len(doc_truth)
+    F1 = 2 * precision * recall / max(0.01, recall + precision)
+    hit = 1 if precision > 0 else 0
+    MAP = average_precision(doc_truth, doc_pred)
+    metrics = {'precision': precision, 'recall': recall, 'F1': F1, 'map': MAP, 'hit': hit}
+    return metrics
 
 
 # ------------------------------------------------------------------------------

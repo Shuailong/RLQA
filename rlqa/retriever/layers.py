@@ -184,7 +184,7 @@ class MLP(nn.Module):
         return: batch
         """
         f = F.tanh(self.linear1(torch.cat([v, e], dim=-1)))
-        p = F.sigmoid(self.linear2(f)).squeeze()
+        p = F.sigmoid(self.linear2(f)).squeeze(-1)
 
         return p
 

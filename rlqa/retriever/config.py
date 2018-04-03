@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # Index of arguments concerning the core model architecture
 MODEL_ARCHITECTURE = {
     'model_type', 'rnn_type', 'embedding_dim', 'hidden_size',
-    'question_layers', 'doc_layers', 'match', 'uncased_question', 'uncased_doc'
+    'question_layers', 'doc_layers'
 }
 
 # Index of arguments concerning the model optimizer/training
@@ -24,6 +24,13 @@ MODEL_OPTIMIZER = {
     'rnn_padding', 'dropout_rnn', 'dropout_rnn_output', 'dropout_emb',
     'grad_clipping', 'tune_partial', 'entropy_regularizer', 'term_epsilon',
     'tokenizer', 'stablize_alpha'
+}
+
+# Index of arguments concerning the model RL training
+MODEL_RL_TRAIN = {
+    'match', 'uncased_question', 'uncased_doc', 'candidate_term_max', 'candidate_doc_max',
+    'ranker_doc_max', 'context_window_size', 'search_engine', 'num_search_workers',
+    'index_folder', 'cache_search_result'
 }
 
 
@@ -80,6 +87,30 @@ def add_model_args(parser):
     optim.add_argument('--term-epsilon', type=float, default=1e-3,
                        help='Threshold value to select terms')
 
+    # RL Training hyperparams
+    rl_params = parser.add_argument_group('RLQA Retriever Doc Selection')
+    rl_params.add_argument('--match', type=str, default='string',
+                           choices=['regex', 'string'])
+    rl_params.add_argument('--candidate-term-max', type=int, default=300,
+                           help='First M words to select from the candidate doc')
+    rl_params.add_argument('--candidate-doc-max', type=int, default=5,
+                           help='First K docs to select as candidate doc')
+    rl_params.add_argument('--ranker-doc-max', type=int, default=40,
+                           help='First k docs to returned by ranker')
+    rl_params.add_argument('--context-window-size', type=int, default=5,
+                           help='context window size for candidate terms. should be odd number.')
+
+    # Search Engine settings
+    search = parser.add_argument_group('RLQA Retriever Search Engine')
+    search.add_argument('--search-engine', type=str, default='lucene', choices=['lucene', 'tfidf_ranker'],
+                        help='search engine')
+    search.add_argument('--num-search-workers', type=int, default=20,
+                        help='search engine workers')
+    search.add_argument('--index-folder', type=str, default='index',
+                        help='folder to store lucene\'s index')
+    search.add_argument('--cache-search-result', type='bool', default=False,
+                        help='use cache to store search result or not')
+
 
 def get_model_args(args):
     """Filter args for model ones.
@@ -87,8 +118,8 @@ def get_model_args(args):
     From a args Namespace, return a new Namespace with *only* the args specific
     to the model architecture or optimization. (i.e. the ones defined here.)
     """
-    global MODEL_ARCHITECTURE, MODEL_OPTIMIZER
-    required_args = MODEL_ARCHITECTURE | MODEL_OPTIMIZER
+    global MODEL_ARCHITECTURE, MODEL_OPTIMIZER, MODEL_RL_TRAIN
+    required_args = MODEL_ARCHITECTURE | MODEL_OPTIMIZER | MODEL_RL_TRAIN
     arg_values = {k: v for k, v in vars(args).items() if k in required_args}
     return argparse.Namespace(**arg_values)
 

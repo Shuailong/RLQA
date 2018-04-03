@@ -5,69 +5,66 @@
 #
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-"""Preprocess the SQuAD dataset for training. Do not use for now."""
+"""Preprocess the SQuAD dataset for training. Tokenize questions. Remove invalid queries(TFIDF ranker). Match docs"""
 
 import argparse
 import os
-import sys
 import json
-import time
+import logging
 
-from multiprocessing import Pool
-from multiprocessing.util import Finalize
-from functools import partial
+from tqdm import tqdm
+
+from rlqa.retriever import utils
 from rlqa import tokenizers
 
-# ------------------------------------------------------------------------------
-# Tokenize
-# ------------------------------------------------------------------------------
 
-TOK = None
-
-
-def init(tokenizer_class, options):
-    global TOK
-    TOK = tokenizer_class(**options)
-    Finalize(TOK, TOK.shutdown, exitpriority=100)
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+fmt = logging.Formatter('%(asctime)s: [ %(message)s ]', '%m/%d/%Y %I:%M:%S %p')
+console = logging.StreamHandler()
+console.setFormatter(fmt)
+logger.addHandler(console)
 
 
-def tokenize(text):
+def is_valid(query, tokenizer):
     """Call the global process tokenizer on the input text."""
-    global TOK
-    return TOK.tokenize(text).words()
+    NGRAM = 2
+    HASH_SIZE = 16777216
+    tokens = tokenizer.tokenize(utils.normalize(query))
+    words = tokens.ngrams(n=NGRAM, uncased=True,
+                          filter_fn=utils.filter_ngram)
 
+    wids = [utils.hash(w, HASH_SIZE) for w in words]
 
-# ------------------------------------------------------------------------------
-# Process dataset examples
-# ------------------------------------------------------------------------------
+    return len(wids) != 0
 
 
 def load_dataset(path):
     """Load json file and store fields separately."""
-    with open(path) as f:
-        output = [json.loads(line) for line in f]
-    return output
+    # Read dataset
+    data = []
+    with open(path, encoding='utf-8') as f:
+        dataset = json.load(f)
+    # Iterate and write question-answer pairs
+    for article in dataset['data']:
+        doc_truth = [utils.normalize(article['title'].replace('_', ' '))]
+        for paragraph in article['paragraphs']:
+            for qa in paragraph['qas']:
+                question = qa['question']
+                answer = [a['text'] for a in qa['answers']]
+                data.append({'question': question, 'answer': answer, 'doc_truth': doc_truth})
+    return data
 
 
-def process_dataset(data, tokenizer, workers=None):
-    """Iterate processing (tokenize, parse, etc) dataset multithreaded."""
-    tokenizer_class = tokenizers.get_class(tokenizer)
-    make_pool = partial(Pool, workers, initializer=init)
-    workers = make_pool(initargs=(tokenizer_class, {}))
-
-    questions = [qa['question'] for qa in data]
-    answers = [qa['answer'] for qa in data]
-    q_tokens = workers.map(tokenize, questions)
-    workers.close()
-    workers.join()
-
-    for idx in range(len(questions)):
-        question = q_tokens[idx]
-        yield {
-            'question': question,
-            'answer': answers[idx]
-        }
-
+def process_dataset(data, tokenizer):
+    valids = []
+    for qa in tqdm(data, total=len(data)):
+        if is_valid(qa['question'], tokenizer):
+            qa['question'] = tokenizer.tokenize(qa['question']).words(uncased=True)
+            valids.append(qa)
+        else:
+            logger.warning(f'WARN: invalid question: {qa["question"]}.')
+    return valids
 
 # -----------------------------------------------------------------------------
 # Commandline options
@@ -75,25 +72,27 @@ def process_dataset(data, tokenizer, workers=None):
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('data_dir', type=str, help='Path to SQuAD data directory')
-parser.add_argument('out_dir', type=str, help='Path to output file dir')
+parser.add_argument('--data_dir', type=str, help='Path to SQuAD data directory',
+                    default='data/datasets')
+parser.add_argument('--out_dir', type=str, help='Path to output file dir',
+                    default='data/datasets')
 parser.add_argument('--split', type=str, help='Filename for train/dev split',
                     default='SQuAD-v1.1-train')
-parser.add_argument('--workers', type=int, default=None)
-parser.add_argument('--tokenizer', type=str, default='corenlp')
+parser.add_argument('--tokenizer', type=str, help='tokenizer to tokenize questions',
+                    default='corenlp')
 args = parser.parse_args()
 
-t0 = time.time()
-
-in_file = os.path.join(args.data_dir, args.split + '.txt')
-print(f'Loading dataset {in_file}', file=sys.stderr)
+in_file = os.path.join(args.data_dir, args.split + '.json')
+logger.info(f'Loading dataset {in_file}')
 dataset = load_dataset(in_file)
 
-out_file = os.path.join(
-    args.out_dir, f'{args.split}-processed-{args.tokenizer}.txt'
-)
-print(f'Will write to file {out_file}', file=sys.stderr)
-with open(out_file, 'w') as f:
-    for ex in process_dataset(dataset, args.tokenizer, args.workers):
+logger.info(f'Initialize {args.tokenizer} tokenizer...')
+tokenizer = tokenizers.get_class(args.tokenizer)()
+pairs = process_dataset(dataset, tokenizer)
+
+out_file = os.path.join(args.out_dir, f'{args.split}-{args.tokenizer}-processed.txt')
+
+with open(out_file, 'w', encoding='utf-8') as f:
+    for ex in pairs:
         f.write(json.dumps(ex) + '\n')
-print(f'Total time: {time.time() - t0:.4f} (s)')
+logger.info(f'write {len(pairs)} QA pairs to file {out_file}')

@@ -16,6 +16,7 @@ from functools import partial
 
 from . import utils
 from . import DEFAULTS
+from .doc_db import DocDB
 from .. import tokenizers
 
 logger = logging.getLogger(__name__)
@@ -26,13 +27,14 @@ class TfidfDocRanker(object):
     Scores new queries by taking sparse dot products.
     """
 
-    def __init__(self, tfidf_path=None, strict=True):
+    def __init__(self, args, word_dict, tfidf_path=None, strict=True):
         """
         Args:
             tfidf_path: path to saved model file
             strict: fail on empty queries or continue (and return empty result)
         """
         # Load from disk
+        self.args = args
         tfidf_path = tfidf_path or DEFAULTS['tfidf_path']
         logger.info('Loading %s' % tfidf_path)
         matrix, metadata = utils.load_sparse_csr(tfidf_path)
@@ -44,6 +46,8 @@ class TfidfDocRanker(object):
         self.doc_dict = metadata['doc_dict']
         self.num_docs = len(self.doc_dict[0])
         self.strict = strict
+        self.doc_db = DocDB()
+        self.word_dict = word_dict
 
     def get_doc_index(self, doc_id):
         """Convert doc_id --> doc_index"""
@@ -53,29 +57,38 @@ class TfidfDocRanker(object):
         """Convert doc_index --> doc_id"""
         return self.doc_dict[1][doc_index]
 
-    def closest_docs(self, query, k=1):
+    def closest_docs(self, query, ranker_doc_max, candidate_doc_max=None):
         """Closest docs by dot product between query and documents
         in tfidf weighted word vector space.
         """
+        if candidate_doc_max is None:
+            candidate_doc_max = ranker_doc_max
+
         spvec = self.text2spvec(query)
         res = spvec * self.doc_mat
 
-        if len(res.data) <= k:
+        if len(res.data) <= candidate_doc_max:
             o_sort = np.argsort(-res.data)
         else:
-            o = np.argpartition(-res.data, k)[0:k]
+            o = np.argpartition(-res.data, candidate_doc_max)[0:candidate_doc_max]
             o_sort = o[np.argsort(-res.data[o])]
 
-        doc_scores = res.data[o_sort]
-        doc_ids = [self.get_doc_id(i) for i in res.indices[o_sort]]
-        return doc_ids, doc_scores
+        # doc_scores = res.data[o_sort]
+        doc_titles = [utils.normalize(self.get_doc_id(i)) for i in res.indices[o_sort]]
+        doc_words = [self.tokenizer.tokenize(self.doc_db.get_doc_text(doc_title)).words(uncased=True)[
+            :self.args.candidate_term_max] for doc_title in doc_titles]
+        words_idx = [[self.word_dict[w] for w in doc] for doc in doc_words]
+        return doc_titles, words_idx, doc_words
 
-    def batch_closest_docs(self, queries, k=1, num_workers=None):
+    def batch_closest_docs(self, queries, ranker_doc_max, candidate_doc_max=None):
         """Process a batch of closest_docs requests multithreaded.
         Note: we can use plain threads here as scipy is outside of the GIL.
         """
-        with ThreadPool(num_workers) as threads:
-            closest_docs = partial(self.closest_docs, k=k)
+        if candidate_doc_max is None:
+            candidate_doc_max = ranker_doc_max
+        with ThreadPool(self.args.num_search_workers) as threads:
+            closest_docs = partial(self.closest_docs, ranker_doc_max=ranker_doc_max,
+                                   candidate_doc_max=candidate_doc_max)
             results = threads.map(closest_docs, queries)
         return results
 
