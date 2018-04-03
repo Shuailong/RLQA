@@ -167,7 +167,7 @@ def index_embedding_words(embedding_file):
     return words
 
 
-def load_words(args, tokenizer, examples):
+def load_words(args, examples):
     """Iterate and index all the words in examples (questions)."""
     if args.restrict_vocab and args.embedding_file:
         logger.info(f'Restricting to words in {args.embedding_file}')
@@ -188,21 +188,21 @@ def load_words(args, tokenizer, examples):
     return words
 
 
-def build_word_dict(args, tokenizer, examples):
+def build_word_dict(args, examples):
     """Return a dictionary from question and document words in
     provided examples.
     """
     word_dict = Dictionary()
-    for w in load_words(args, tokenizer, examples):
+    for w in load_words(args, examples):
         word_dict.add(w)
     return word_dict
 
 
-def top_question_words(args, tokenizer, examples, word_dict):
+def top_question_words(args, examples, word_dict):
     """Count and return the most common question words in provided examples."""
     word_count = Counter()
     for ex in examples:
-        for w in tokenizer.tokenize(ex['question']).words():
+        for w in ex['question']:
             w = Dictionary.normalize(w)
             if args.uncased_question:
                 w = w.lower()
