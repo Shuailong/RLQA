@@ -7,12 +7,10 @@
 # LICENSE file in the root directory of this source tree.
 """Data processing/loading helpers."""
 
-import numpy as np
 import logging
 import unicodedata
 
 from torch.utils.data import Dataset
-from torch.utils.data.sampler import Sampler
 
 logger = logging.getLogger(__name__)
 

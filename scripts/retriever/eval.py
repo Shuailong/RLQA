@@ -10,14 +10,20 @@
 import logging
 import argparse
 import json
-import time
 import os
 
 from tqdm import tqdm
+import numpy as np
+
 import torch
 
-from rlqa.retriever import Retriever
+from rlqa.retriever import utils, data, vector
+from rlqa.retriever import RLDocRetriever
+from rlqa.retriever import DEFAULTS
+from rlqa import DATA_DIR as RLQA_DATA
 
+
+MODEL_DIR = os.path.join(RLQA_DATA, 'rlmodels')
 
 # ------------------------------------------------------------------------------
 # Main
@@ -35,31 +41,30 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('dataset', type=str, default=None,
-                        help='SQuAD-like dataset to evaluate on')
-    parser.add_argument('--model', type=str, default=None,
+                        help='SQuAD-like dataset to evaluate on (txt format)')
+    parser.add_argument('--model', type=str, default='20180405-6444acd0.mdl',
                         help='Path to model to use')
-    parser.add_argument('--embedding-file', type=str, default=None,
-                        help=('Expand dictionary to use all pretrained '
-                              'embeddings in this file.'))
-    parser.add_argument('--tokenizer', type=str, default=None,
-                        help=("String option specifying tokenizer type to use "
-                              "(e.g. 'corenlp')"))
-    parser.add_argument('--num-workers', type=int, default=None,
-                        help='Number of CPU processes (for tokenizing, etc)')
+    parser.add_argument('--data-workers', type=int, default=5,
+                        help='Number of subprocesses for data loading')
     parser.add_argument('--no-cuda', action='store_true',
                         help='Use CPU only')
     parser.add_argument('--gpu', type=int, default=-1,
                         help='Specify GPU device id to use')
-    parser.add_argument('--batch-size', type=int, default=128,
+    parser.add_argument('--batch-size', type=int, default=10,
                         help='Example batching size')
-    parser.add_argument('--top_n', type=int, default=5,
+    parser.add_argument('--candidate_doc_max', type=int, default=5,
                         help='retrieve top n docs per question')
-    parser.add_argument('--match', type=str, default='string',
-                        choices=['regex', 'string'])
-    args = parser.parse_args()
+    parser.add_argument('--ranker_doc_max', type=int, default=5,
+                        help='retrieve top n docs per question')
+    parser.add_argument('--metrics', type=str, choices=['precision', 'recall', 'F1', 'map', 'hit'],
+                        help='metrics to display when training', nargs='+',
+                        default=['precision', 'hit'])
+    parser.add_argument('--reformulate-rounds', type=int, default=1,
+                        help='query reformulate rounds')
+    parser.add_argument('--search-engine', type=str, default='lucene', choices=['lucene', 'tfidf_ranker'],
+                        help='search engine')
 
-    # start time
-    start = time.time()
+    args = parser.parse_args()
 
     args.cuda = not args.no_cuda and torch.cuda.is_available()
     if args.cuda:
@@ -68,39 +73,61 @@ if __name__ == '__main__':
     else:
         logger.info('Running on CPU only.')
 
-    # get the closest docs for each question.
-    logger.info('Initializing retriever...')
-    retriever = Retriever(
-        args.model,
-        args.tokenizer,
-        args.embedding_file,
-        args.num_workers,
-    )
+    # --------------------------------------------------------------------------
+    # MODEL
+    model_path = os.path.join(MODEL_DIR, args.model)
+    logger.info('-' * 100)
+    model = RLDocRetriever.load(model_path or DEFAULTS['model'], new_args=args)
+    model.add_search_engine(model.args, model.word_dict)
     if args.cuda:
-        retriever.cuda()
+        model.cuda()
 
-    # read all the data and store it
-    logger.info('Reading data ...')
-    exmaples = []
-    for line in open(args.dataset):
-        data = json.loads(line)
-        exmaples.append((data['question'], data['answers']))
+    # --------------------------------------------------------------------------
+    # DATA
+    logger.info('-' * 100)
+    logger.info(f'Load data files from {args.dataset}')
+    exs = utils.load_data(args.dataset)
+    logger.info(f'Num examples = {len(exs)}')
 
-    # compute the scores for each pair, and print the statistics
-    logger.info('Retrieving docs and computing scores...')
+    # --------------------------------------------------------------------------
+    # DATA ITERATORS
+    # Two datasets: train and dev. If we sort by length it's faster.
+    logger.info('-' * 100)
+    logger.info('Make data loaders')
+    dataset = data.RetriverDataset(exs)
 
-    scores = []
-    for i in tqdm(range(0, len(exmaples), args.batch_size)):
-        _, metrics = retriever.batch_retrieve_docs(
-            zip(*exmaples[i:i + args.batch_size]), top_n=args.top_n)
-        scores.extend([m['hit'] for m in metrics])
+    sampler = torch.utils.data.sampler.SequentialSampler(dataset)
 
-    filename = os.path.basename(args.dataset)
-    stats = "\n" + "-" * 50 + "\n"
-    # f"{filename}\n" +
-    # f"Examples:\t\t\t{len(scores)}\n" +
-    # f"Matches in top {args.top_n}:\t\t{sum(scores)}\n" +
-    # f"Match % in top {args.top_n}:\t\t{(sum(scores) / len(scores) * 100):2.2f}\n" +
-    # f"Total time:\t\t\t{time.time() - start:2.4f} (s)\n"
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        sampler=sampler,
+        num_workers=args.data_workers,
+        collate_fn=vector.batchify,
+        pin_memory=args.cuda,
+    )
 
-    print(stats)
+    # -------------------------------------------------------------------------
+    # PRINT CONFIG
+    logger.info('-' * 100)
+    logger.info('CONFIG:\n%s' %
+                json.dumps(vars(args), indent=4, sort_keys=True))
+
+    logger.info('MODEL CONFIG:\n%s' %
+                json.dumps(vars(model.args), indent=4, sort_keys=True))
+
+    # --------------------------------------------------------------------------
+    # EVAL LOOP
+    logger.info('-' * 100)
+    logger.info('Starting evaluating...')
+
+    eval_time = utils.Timer()
+    meters = {k: utils.AverageMeter() for k in args.metrics}
+
+    # Make predictions
+    for idx, ex in tqdm(enumerate(loader), total=len(loader)):
+        batch_size, metrics = model.retrieve(ex)
+        metrics_last = {k: np.mean([m[k] for m in metrics[-1]]).item() for k in args.metrics}
+        [meters[k].update(metrics_last[k], batch_size) for k in meters]
+
+    logger.info(' | '.join([f'{k}: {meters[k].avg:.2f}' for k in args.metrics]))

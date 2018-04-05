@@ -23,14 +23,15 @@ MODEL_OPTIMIZER = {
     'fix_embeddings', 'optimizer', 'learning_rate', 'momentum', 'weight_decay',
     'rnn_padding', 'dropout_rnn', 'dropout_rnn_output', 'dropout_emb',
     'grad_clipping', 'tune_partial', 'entropy_regularizer', 'term_epsilon',
-    'tokenizer', 'stablize_alpha'
+    'stablize_alpha', 'reformulate_rounds', 'search_engine', 'ranker_doc_max'
 }
 
 # Index of arguments concerning the model RL training
-MODEL_RL_TRAIN = {
-    'match', 'uncased_question', 'uncased_doc', 'candidate_term_max', 'candidate_doc_max',
-    'ranker_doc_max', 'context_window_size', 'search_engine', 'num_search_workers',
-    'index_folder', 'cache_search_result'
+MODEL_OTHERS = {
+    'match', 'candidate_term_max', 'candidate_doc_max',
+    'context_window_size', 'num_search_workers',
+    'index_folder', 'cache_search_result',
+    'uncased_question', 'uncased_doc', 'tokenizer'
 }
 
 
@@ -90,7 +91,7 @@ def add_model_args(parser):
     # RL Training hyperparams
     rl_params = parser.add_argument_group('RLQA Retriever Doc Selection')
     rl_params.add_argument('--match', type=str, default='string',
-                           choices=['regex', 'string'])
+                           choices=['regex', 'string', 'title'])
     rl_params.add_argument('--candidate-term-max', type=int, default=300,
                            help='First M words to select from the candidate doc')
     rl_params.add_argument('--candidate-doc-max', type=int, default=5,
@@ -99,6 +100,8 @@ def add_model_args(parser):
                            help='First k docs to returned by ranker')
     rl_params.add_argument('--context-window-size', type=int, default=5,
                            help='context window size for candidate terms. should be odd number.')
+    rl_params.add_argument('--reformulate-rounds', type=int, default=1,
+                           help='query reformulate rounds')
 
     # Search Engine settings
     search = parser.add_argument_group('RLQA Retriever Search Engine')
@@ -106,7 +109,7 @@ def add_model_args(parser):
                         help='search engine')
     search.add_argument('--num-search-workers', type=int, default=20,
                         help='search engine workers')
-    search.add_argument('--index-folder', type=str, default='index',
+    search.add_argument('--index-folder', type=str, default='index-full',
                         help='folder to store lucene\'s index')
     search.add_argument('--cache-search-result', type='bool', default=False,
                         help='use cache to store search result or not')
@@ -118,8 +121,8 @@ def get_model_args(args):
     From a args Namespace, return a new Namespace with *only* the args specific
     to the model architecture or optimization. (i.e. the ones defined here.)
     """
-    global MODEL_ARCHITECTURE, MODEL_OPTIMIZER, MODEL_RL_TRAIN
-    required_args = MODEL_ARCHITECTURE | MODEL_OPTIMIZER | MODEL_RL_TRAIN
+    global MODEL_ARCHITECTURE, MODEL_OPTIMIZER, MODEL_OTHERS
+    required_args = MODEL_ARCHITECTURE | MODEL_OPTIMIZER | MODEL_OTHERS
     arg_values = {k: v for k, v in vars(args).items() if k in required_args}
     return argparse.Namespace(**arg_values)
 

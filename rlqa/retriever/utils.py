@@ -147,7 +147,7 @@ def load_data(filename):
     One example per line, JSON encoded.
     """
     # Load JSON lines
-    with open(filename) as f:
+    with open(filename, encoding='utf-8') as f:
         examples = [json.loads(line) for line in f]
 
     return examples
@@ -185,6 +185,13 @@ def load_words(args, examples):
             if args.uncased_question:
                 word = word.lower()
             words.add(word)
+        for ans in ex['answer']:
+            for word in Dictionary.normalize(word):
+                if valid_words and word not in valid_words:
+                    continue
+                if args.uncased_doc:
+                    word = word.lower()
+                words.add(word)
     return words
 
 
@@ -215,7 +222,7 @@ def top_question_words(args, examples, word_dict):
 # Metrics
 # ------------------------------------------------------------------------------
 
-def average_precision(doc_truth, doc_pred):
+def average_precision(title_truth, title_pred):
     '''Computes the average precision.
 
     This function computes the average prescision at k between two lists of
@@ -235,28 +242,68 @@ def average_precision(doc_truth, doc_pred):
     score : double
             The average precision over the input lists
     '''
-    if not doc_truth:
+    if not title_truth:
         return 0.0
 
     score = 0.0
     num_hits = 0.0
 
-    for i, p in enumerate(doc_pred):
-        if p in doc_truth and p not in doc_pred[:i]:
+    for i, p in enumerate(title_pred):
+        if p in title_truth and p not in title_pred[:i]:
             num_hits += 1.0
             score += num_hits / (i + 1.0)
 
-    return score / max(1, min(len(doc_pred), len(doc_truth)))
+    return score / max(1, min(len(title_pred), len(title_truth)))
 
 
-def retrieve_metrics(doc_truth, doc_pred):
+def metrics_by_title(title_truth, title_pred):
     """Search through all the top docs to see if they have the answer."""
-    TP = len(set(doc_truth) & set(doc_pred))
-    precision = TP / len(doc_pred)
-    recall = TP / len(doc_truth)
+    TP = len(set(title_truth) & set(title_pred))
+    precision = TP / len(title_pred)
+    recall = TP / len(title_truth)
     F1 = 2 * precision * recall / max(0.01, recall + precision)
     hit = 1 if precision > 0 else 0
-    MAP = average_precision(doc_truth, doc_pred)
+    MAP = average_precision(title_truth, title_pred)
+    metrics = {'precision': precision, 'recall': recall, 'F1': F1, 'map': MAP, 'hit': hit}
+    return metrics
+
+
+def metrics_by_content(answer, doc_pred, match='string'):
+    """Search through all the top docs to see if they have the answer."""
+
+    def regex_match(text, pattern):
+        """Test if a regex pattern is contained within a text."""
+        try:
+            pattern = re.compile(
+                pattern,
+                flags=re.IGNORECASE + re.UNICODE + re.MULTILINE,
+            )
+        except BaseException:
+            return False
+        return pattern.search(text) is not None
+
+    def has_answer(answer, doc, match):
+        if match == 'string':
+            for single_answer in answer:
+                for i in range(len(doc) - len(single_answer) - 1):
+                    if single_answer == doc[i: i + len(single_answer)]:
+                        return True
+        elif match == 'regex':
+            single_answer = answer[0]
+            if regex_match(doc, single_answer):
+                return True
+        return False
+
+    TP = 0
+    for doc in doc_pred:
+        if has_answer(answer, doc, match):
+            TP += 1
+
+    hit = 1 if TP > 0 else 0
+    precision = TP / len(doc_pred)
+
+    recall = F1 = MAP = -1
+
     metrics = {'precision': precision, 'recall': recall, 'F1': F1, 'map': MAP, 'hit': hit}
     return metrics
 

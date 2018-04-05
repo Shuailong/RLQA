@@ -8,14 +8,17 @@
 """Main RLQA retriever training script."""
 
 import argparse
-import torch
-import numpy as np
 import json
 import os
 import sys
 import subprocess
 import logging
+import pickle
+
 from termcolor import colored
+from tqdm import tqdm
+import numpy as np
+import torch
 
 from rlqa.retriever import utils, vector, config, data
 from rlqa.retriever import RLDocRetriever
@@ -61,7 +64,7 @@ def add_train_args(parser):
                                'operations (for reproducibility)'))
     runtime.add_argument('--num-epochs', type=int, default=100,
                          help='Train data iterations')
-    runtime.add_argument('--batch-size', type=int, default=10,
+    runtime.add_argument('--batch-size', type=int, default=50,
                          help='Batch size for training')
     runtime.add_argument('--test-batch-size', type=int, default=10,
                          help='Batch size during validation/testing')
@@ -109,12 +112,13 @@ def add_train_args(parser):
 
     # General
     general = parser.add_argument_group('General')
-    general.add_argument('--valid-metric', type=str, default='precision',
+    general.add_argument('--valid-metric', type=str, default='hit',
                          help='The evaluation metric used for model selection')
     general.add_argument('--display-iter', type=int, default=25,
                          help='Log state after every <display_iter> epochs')
     general.add_argument('--metrics', type=str, choices=['precision', 'recall', 'F1', 'map', 'hit'],
-                         help='metrics to display when training', nargs='+')
+                         help='metrics to display when training', nargs='+',
+                         default=['precision', 'hit'])
 
 
 def set_defaults(args):
@@ -178,22 +182,23 @@ def set_defaults(args):
 
 
 def init_from_scratch(args, train_exs, dev_exs):
-    """New model, new data, new dictionary."""
+    """New model, new data, new dictionary.
+        TODO: [Critical] remove vocabulary from dataset. keep vocabulary in pretrained embeddings only.
+    """
 
-    # Build a dictionary from the data questions + words (train/dev splits)
+    # Build a dictionary from the pretrained embeddings file
     logger.info('-' * 100)
-    logger.info('Build dictionary')
-    word_dict = utils.build_word_dict(args, train_exs + dev_exs)
-    logger.info(f'Num words in dataset = {len(word_dict)}')
-
     # Initialize model
+    word_dict_path = os.path.join(MODEL_DIR, 'dict.pkl')
+    logger.info(f'Load dictionary from {word_dict_path}')
+    word_dict = pickle.load(open(word_dict_path, 'rb'))
     model = RLDocRetriever(config.get_model_args(args), word_dict)
 
     # Load pretrained embeddings for words in dictionary
     if args.embedding_file:
-        words = utils.index_embedding_words(args.embedding_file)
-        model.expand_dictionary(words)
         model.load_embeddings(model.word_dict, args.embedding_file)
+
+    model.add_search_engine(args, model.word_dict)
 
     return model
 
@@ -207,32 +212,31 @@ def train(args, data_loader, model, global_stats):
     # Initialize meters + timers
     train_loss = utils.AverageMeter()
 
-    metrics = args.metrics
-    # meters = {k: utils.AverageMeter() for k in metrics}
-    # meters_ext = {k: utils.AverageMeter() for k in metrics}
+    metrics_names = args.metrics
+    # meters = {k: utils.AverageMeter() for k in metrics_names}
 
     epoch_time = utils.Timer()
 
     # Run one epoch
     for idx, ex in enumerate(data_loader):
-        loss, batch_size, rewards, rewards_ext = model.update(ex)
+        loss, batch_size, metrics = model.update(ex)
         train_loss.update(loss, batch_size)
 
-        metrics_avg = {k: np.mean([m[k] for m in rewards]).item() for k in metrics}
-        metrics_avg_ext = {k: np.mean([m[k] for m in rewards_ext]).item() for k in metrics}
+        metrics_first = {k: np.mean([m[k] for m in metrics[0]]).item() for k in metrics_names}
+        metrics_last = {k: np.mean([m[k] for m in metrics[-1]]).item() for k in metrics_names}
 
-        # [meters[k].update(metrics_avg[k], batch_size) for k in meters]
-        # [meters_ext[k].update(metrics_avg_ext[k], batch_size) for k in meters_ext]
+        # [meters[k].update(metrics_first[k], batch_size) for k in meters]
         if idx % args.display_iter == 0:
             logger.info(f'train: Epoch = {global_stats["epoch"]} | iter = {idx}/{ len(data_loader)} | ' +
                         f'loss = {train_loss.avg:.2f} | elapsed time = {global_stats["timer"].time():.2f} (s)')
-            metrics_avg_ext = {k: colored(f'{metrics_avg_ext[k]:.2f}', color='green')
-                               if metrics_avg[k] < metrics_avg_ext[k]
-                               else colored(f'{metrics_avg_ext[k]:.2f}', color='red')
-                               for k in metrics}
-            if len(metrics):
-                logger.info(f'baseline metrics: ' + ' | '.join([f'{k}: {metrics_avg[k]:.2f}' for k in metrics]))
-                logger.info(f'extended metrics: ' + ' | '.join([f'{k}: {metrics_avg_ext[k]}' for k in metrics]))
+            metrics_last = {k: colored(f'{metrics_last[k]:.2f}', color='green')
+                            if metrics_first[k] < metrics_last[k]
+                            else colored(f'{metrics_last[k]:.2f}', color='red')
+                            for k in metrics_names}
+            if len(metrics_names):
+                logger.info(f'r0: ' + ' | '.join([f'{k}: {metrics_first[k]:.2f}' for k in metrics_names]))
+                logger.info(f'r{args.reformulate_rounds}: ' +
+                            ' | '.join([f'{k}: {metrics_last[k]}' for k in metrics_names]))
             train_loss.reset()
             # [meters[k].reset() for k in meters]
             # [meters_ext[k].reset() for k in meters_ext]
@@ -255,24 +259,23 @@ def validate(args, data_loader, model, global_stats, mode):
     """Run one full validation.
     """
     eval_time = utils.Timer()
-    recall = utils.AverageMeter()
+    meter = utils.AverageMeter()
 
     # Make predictions
     examples = 0
-    for idx, ex in enumerate(data_loader):
-        batch_size = len(ex[0])
-        results, metrics = model.retrieve(ex)
-        metrics_avg = {k: np.mean([m[k] for m in metrics]).item() for k in metrics[0].keys()}
-        recall.update(metrics_avg['recall'], batch_size)
+    for idx, ex in tqdm(enumerate(data_loader), total=len(data_loader)):
+        batch_size, metrics = model.retrieve(ex)
+        metrics_last = {k: np.mean([m[k] for m in metrics[-1]]).item() for k in args.metrics}
+        meter.update(metrics_last[args.valid_metric], batch_size)
         # If getting train accuracies, sample max 10k
         examples += batch_size
         if mode == 'train' and examples >= 1e4:
             break
 
-    logger.info(f'{mode} valid: Epoch = {global_stats["epoch"]} | recall = {recall.avg:.2f} | ' +
+    logger.info(f'{mode} valid: Epoch = {global_stats["epoch"]} | {args.valid_metric} = {meter.avg:.2f} | ' +
                 f'examples = {examples} | valid time = {eval_time.time():.2f} (s)')
 
-    return {'recall': recall.avg}
+    return {args.valid_metric: meter.avg}
 
 
 # ------------------------------------------------------------------------------
@@ -362,6 +365,15 @@ def main(args):
         collate_fn=vector.batchify,
         pin_memory=args.cuda,
     )
+    train_dev_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=args.test_batch_size,
+        sampler=train_sampler,
+        num_workers=args.data_workers,
+        collate_fn=vector.batchify,
+        pin_memory=args.cuda,
+    )
+
     dev_dataset = data.RetriverDataset(dev_exs)
     dev_sampler = torch.utils.data.sampler.SequentialSampler(dev_dataset)
     dev_loader = torch.utils.data.DataLoader(
@@ -391,7 +403,7 @@ def main(args):
         train(args, train_loader, model, stats)
 
         # Validate train
-        validate(args, train_loader, model, stats, mode='train')
+        validate(args, train_dev_loader, model, stats, mode='train')
 
         # Validate dev
         result = validate(args, dev_loader, model, stats, mode='dev')
@@ -427,7 +439,7 @@ if __name__ == '__main__':
         torch.cuda.manual_seed(args.random_seed)
 
     # Set logging
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
     fmt = logging.Formatter('%(asctime)s: [ %(message)s ]',
                             '%m/%d/%Y %I:%M:%S %p')
     console = logging.StreamHandler()

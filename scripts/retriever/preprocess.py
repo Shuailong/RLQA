@@ -26,20 +26,7 @@ console.setFormatter(fmt)
 logger.addHandler(console)
 
 
-def is_valid(query, tokenizer):
-    """Call the global process tokenizer on the input text."""
-    NGRAM = 2
-    HASH_SIZE = 16777216
-    tokens = tokenizer.tokenize(utils.normalize(query))
-    words = tokens.ngrams(n=NGRAM, uncased=True,
-                          filter_fn=utils.filter_ngram)
-
-    wids = [utils.hash(w, HASH_SIZE) for w in words]
-
-    return len(wids) != 0
-
-
-def load_dataset(path):
+def load_json_dataset(path):
     """Load json file and store fields separately."""
     # Read dataset
     data = []
@@ -56,41 +43,57 @@ def load_dataset(path):
     return data
 
 
-def process_dataset(data, tokenizer):
-    valids = []
+def process_dataset(data, tokenizer, match):
+    processed = []
     for qa in tqdm(data, total=len(data)):
-        if is_valid(qa['question'], tokenizer):
-            qa['question'] = tokenizer.tokenize(qa['question']).words(uncased=True)
-            valids.append(qa)
+        qa['question'] = tokenizer.tokenize(utils.normalize(qa['question'])).words(uncased=True)
+        if match == 'string':
+            qa['answer'] = [tokenizer.tokenize(utils.normalize(ans)).words(uncased=True) for ans in qa['answer']]
         else:
-            logger.warning(f'WARN: invalid question: {qa["question"]}.')
-    return valids
+            qa['answer'] = [utils.normalize(ans) for ans in qa['answer']]
+        processed.append(qa)
+    return processed
 
 # -----------------------------------------------------------------------------
 # Commandline options
 # -----------------------------------------------------------------------------
 
 
+def str2bool(v):
+    return v.lower() in ('yes', 'true', 't', '1', 'y')
+
+
 parser = argparse.ArgumentParser()
+parser.register('type', 'bool', str2bool)
+
 parser.add_argument('--data_dir', type=str, help='Path to SQuAD data directory',
                     default='data/datasets')
 parser.add_argument('--out_dir', type=str, help='Path to output file dir',
                     default='data/datasets')
-parser.add_argument('--split', type=str, help='Filename for train/dev split',
-                    default='SQuAD-v1.1-train')
+parser.add_argument('--file', type=str, help='Filename for train/dev split')
 parser.add_argument('--tokenizer', type=str, help='tokenizer to tokenize questions',
                     default='corenlp')
+parser.add_argument('--match', type=str, default='string', choices=['regex', 'string', 'title'],
+                    help='only tokenize answers when match == "string"')
+
 args = parser.parse_args()
 
-in_file = os.path.join(args.data_dir, args.split + '.json')
+in_file = os.path.join(args.data_dir, args.file)
 logger.info(f'Loading dataset {in_file}')
-dataset = load_dataset(in_file)
+
+if in_file.endswith('.json'):
+    dataset = load_json_dataset(in_file)
+elif in_file.endswith('.txt'):
+    dataset = utils.load_data(in_file)
+
 
 logger.info(f'Initialize {args.tokenizer} tokenizer...')
 tokenizer = tokenizers.get_class(args.tokenizer)()
-pairs = process_dataset(dataset, tokenizer)
 
-out_file = os.path.join(args.out_dir, f'{args.split}-{args.tokenizer}-processed.txt')
+pairs = process_dataset(dataset, tokenizer, args.match)
+
+basename = os.path.splitext(args.file)[0]
+out_file = os.path.join(args.out_dir, f'{basename}-{args.tokenizer}-processed.txt')
 
 with open(out_file, 'w', encoding='utf-8') as f:
     for ex in pairs:

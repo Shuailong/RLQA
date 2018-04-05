@@ -94,7 +94,7 @@ class LuceneSearch(object):
         doc.add(Field("text", txt, self.t2))
 
         if add_terms:
-            words = self.tokenizer.tokenize(clean(txt)).words(uncased=True)[:self.args.candidate_term_max]
+            words = self.tokenizer.tokenize(clean(txt)).words(uncased=True)
             words_idx = [self.word_dict[w] for w in words]
             doc.add(Field("word_idx", ' '.join(map(str, words_idx)), self.t3))
             doc.add(Field("word", '<&>'.join(words), self.t3))
@@ -130,9 +130,8 @@ class LuceneSearch(object):
         logger.info(f"Index of {self.writer.numDocs()} docs...")
         self.writer.close()
 
-    def search_multithread(self, qs, ranker_doc_max, candidate_doc_max, searcher):
+    def search_multithread(self, qs, ranker_doc_max, searcher):
         self.ranker_doc_max = ranker_doc_max
-        self.candidate_doc_max = candidate_doc_max
         self.curr_searcher = searcher
         out = self.pool.map(self.search_multithread_part, qs)
 
@@ -159,18 +158,15 @@ class LuceneSearch(object):
 
             for i, hit in enumerate(hits.scoreDocs):
                 doc = self.curr_searcher.doc(hit.doc)
-                if i < self.candidate_doc_max:
-                    word_idx = list(map(int, doc['word_idx'].split(' ')))
-                    word = doc['word'].split('<&>')
-                else:
-                    word_idx = []
-                    word = []
+                word_idx = list(map(int, doc['word_idx'].split(' ')))
+                word = doc['word'].split('<&>')
+
                 doc_titles.append(self.id_title_map[int(doc['id'])])
                 words_idxs.append(word_idx)
                 words.append(word)
             return doc_titles, words_idxs, words
 
-    def search_singlethread(self, qs, ranker_doc_max, candidate_doc_max, curr_searcher):
+    def search_singlethread(self, qs, ranker_doc_max, curr_searcher):
         out = []
         for q in qs:
             if q in self.cache:
@@ -189,12 +185,9 @@ class LuceneSearch(object):
 
                 for i, hit in enumerate(hits.scoreDocs):
                     doc = curr_searcher.doc(hit.doc)
-                    if i < candidate_doc_max:
-                        word_idx = map(int, doc['word_idx'].split(' '))
-                        word = doc['word'].split('<&>')
-                    else:
-                        word_idx = []
-                        word = []
+                    word_idx = map(int, doc['word_idx'].split(' '))
+                    word = doc['word'].split('<&>')
+
                     doc_titles.append(self.id_title_map[int(doc['id'])])
                     words_idxs.append(word_idx)
                     words.append(word)
@@ -203,14 +196,12 @@ class LuceneSearch(object):
 
         return out
 
-    def batch_closest_docs(self, qs, ranker_doc_max, candidate_doc_max=None, save_cache=False):
-        if not candidate_doc_max:
-            candidate_doc_max = ranker_doc_max
+    def batch_closest_docs(self, qs, ranker_doc_max, save_cache=False):
 
         if self.args.num_search_workers > 1:
-            out = self.search_multithread(qs, ranker_doc_max, candidate_doc_max, self.searcher)
+            out = self.search_multithread(qs, ranker_doc_max, self.searcher)
         else:
-            out = self.search_singlethread(qs, ranker_doc_max, candidate_doc_max, self.searcher)
+            out = self.search_singlethread(qs, ranker_doc_max, self.searcher)
 
         if save_cache:
             for q, c in itertools.izip(qs, out):
