@@ -46,11 +46,10 @@ def load_json_dataset(path):
 def process_dataset(data, tokenizer, match):
     processed = []
     for qa in tqdm(data, total=len(data)):
-        qa['question'] = tokenizer.tokenize(utils.normalize(qa['question'])).words(uncased=True)
-        if match == 'string':
-            qa['answer'] = [tokenizer.tokenize(utils.normalize(ans)).words(uncased=True) for ans in qa['answer']]
-        else:
-            qa['answer'] = [utils.normalize(ans) for ans in qa['answer']]
+        qa['question_tokens'] = tokenizer.tokenize(utils.normalize(qa['question'])).words(uncased=True)
+        if match != 'regex':
+            qa['answer_tokens'] = [tokenizer.tokenize(utils.normalize(ans)).words(uncased=True) for ans in qa['answer']]
+
         processed.append(qa)
     return processed
 
@@ -73,7 +72,7 @@ parser.add_argument('--out_dir', type=str, help='Path to output file dir',
 parser.add_argument('--file', type=str, help='Filename for train/dev split')
 parser.add_argument('--tokenizer', type=str, help='tokenizer to tokenize questions',
                     default='corenlp')
-parser.add_argument('--match', type=str, default='string', choices=['regex', 'string', 'title'],
+parser.add_argument('--match', type=str, default='token', choices=['regex', 'string', 'title', 'token'],
                     help='only tokenize answers when match == "string"')
 
 args = parser.parse_args()

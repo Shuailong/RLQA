@@ -27,7 +27,7 @@ class TfidfDocRanker(object):
     Scores new queries by taking sparse dot products.
     """
 
-    def __init__(self, args, word_dict, tfidf_path=None, strict=True):
+    def __init__(self, args, tfidf_path=None, strict=True):
         """
         Args:
             tfidf_path: path to saved model file
@@ -45,7 +45,8 @@ class TfidfDocRanker(object):
         self.doc_dict = metadata['doc_dict']
         self.num_docs = len(self.doc_dict[0])
         self.doc_db = DocDB()
-        self.word_dict = word_dict
+
+        self.text_cache, self.word_cache = {}, {}
 
     def get_doc_index(self, doc_id):
         """Convert doc_id --> doc_index"""
@@ -65,15 +66,25 @@ class TfidfDocRanker(object):
         if len(res.data) <= ranker_doc_max:
             o_sort = np.argsort(-res.data)
         else:
-            o = np.argpartition(-res.data, ranker_doc_max)[0:ranker_doc_max]
+            o = np.argpartition(-res.data, ranker_doc_max)[:ranker_doc_max]
             o_sort = o[np.argsort(-res.data[o])]
 
         # doc_scores = res.data[o_sort]
-        doc_titles = [utils.normalize(self.get_doc_id(i)) for i in res.indices[o_sort]]
-        doc_texts = [self.doc_db.get_doc_text(doc_title) for doc_title in doc_titles]
-        doc_words = [self.tokenizer.tokenize(doc_text).words(uncased=True) for doc_text in doc_texts]
-        words_idx = [[self.word_dict[w] for w in doc] for doc in doc_words]
-        return doc_titles, words_idx, doc_words
+        doc_titles = [self.get_doc_id(i) for i in res.indices[o_sort]]
+        doc_scores = res.data[o_sort]
+        doc_texts, doc_words = [], []
+        for doc_title in doc_titles:
+            if doc_title in self.text_cache:
+                doc_text = self.text_cache[doc_title]
+                doc_word = self.word_cache[doc_title]
+            else:
+                doc_text = self.doc_db.get_doc_text(doc_title)
+                doc_word = self.tokenizer.tokenize(utils.normalize(doc_text)).words(uncased=True)
+                self.text_cache[doc_title] = doc_text
+                self.word_cache[doc_title] = doc_word
+            doc_texts.append(doc_text)
+            doc_words.append(doc_word)
+        return doc_scores, doc_titles, doc_texts, doc_words
 
     def batch_closest_docs(self, queries, ranker_doc_max):
         """Process a batch of closest_docs requests multithreaded.

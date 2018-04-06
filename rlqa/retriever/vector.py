@@ -15,7 +15,9 @@ def batchify(batch):
     """Gather a batch of individual examples into one batch."""
 
     questions = [ex['question'] for ex in batch]
+    question_tokens = [ex['question_tokens'] for ex in batch]
     answers = [ex['answer'] for ex in batch]
-    docs_truth = [ex['doc_truth'] for ex in batch]
-    return questions, answers, docs_truth
+    answer_tokens = [ex['answer_tokens'] for ex in batch] if 'answer_tokens' in batch[0] else None
+    docs_truth = [ex['doc_truth'] for ex in batch] if 'doc_truth' in batch[0] else None
+    return questions, question_tokens, answers, answer_tokens, docs_truth
 

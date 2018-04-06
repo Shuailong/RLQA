@@ -23,12 +23,12 @@ MODEL_OPTIMIZER = {
     'fix_embeddings', 'optimizer', 'learning_rate', 'momentum', 'weight_decay',
     'rnn_padding', 'dropout_rnn', 'dropout_rnn_output', 'dropout_emb',
     'grad_clipping', 'tune_partial', 'entropy_regularizer', 'term_epsilon',
-    'stablize_alpha', 'reformulate_rounds', 'search_engine', 'ranker_doc_max'
+    'stablize_alpha', 'reformulate_rounds', 'search_engine', 'ranker_doc_max', 'match', 'similarity'
 }
 
 # Index of arguments concerning the model RL training
 MODEL_OTHERS = {
-    'match', 'candidate_term_max', 'candidate_doc_max',
+    'candidate_term_max', 'candidate_doc_max',
     'context_window_size', 'num_search_workers',
     'index_folder', 'cache_search_result',
     'uncased_question', 'uncased_doc', 'tokenizer'
@@ -90,8 +90,8 @@ def add_model_args(parser):
 
     # RL Training hyperparams
     rl_params = parser.add_argument_group('RLQA Retriever Doc Selection')
-    rl_params.add_argument('--match', type=str, default='string',
-                           choices=['regex', 'string', 'title'])
+    rl_params.add_argument('--match', type=str, default='token',
+                           choices=['regex', 'string', 'title', 'token'])
     rl_params.add_argument('--candidate-term-max', type=int, default=300,
                            help='First M words to select from the candidate doc')
     rl_params.add_argument('--candidate-doc-max', type=int, default=5,
@@ -109,10 +109,12 @@ def add_model_args(parser):
                         help='search engine')
     search.add_argument('--num-search-workers', type=int, default=20,
                         help='search engine workers')
-    search.add_argument('--index-folder', type=str, default='index-full',
+    search.add_argument('--index-folder', type=str, default='index-full-text',
                         help='folder to store lucene\'s index')
     search.add_argument('--cache-search-result', type='bool', default=False,
                         help='use cache to store search result or not')
+    search.add_argument('--similarity', type=str, default='classic', choices=['classic', 'bm25'],
+                        help='lucene search similarity')
 
 
 def get_model_args(args):

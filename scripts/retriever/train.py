@@ -13,7 +13,6 @@ import os
 import sys
 import subprocess
 import logging
-import pickle
 
 from termcolor import colored
 from tqdm import tqdm
@@ -183,22 +182,19 @@ def set_defaults(args):
 
 def init_from_scratch(args, train_exs, dev_exs):
     """New model, new data, new dictionary.
-        TODO: [Critical] remove vocabulary from dataset. keep vocabulary in pretrained embeddings only.
     """
 
     # Build a dictionary from the pretrained embeddings file
     logger.info('-' * 100)
     # Initialize model
-    word_dict_path = os.path.join(MODEL_DIR, 'dict.pkl')
-    logger.info(f'Load dictionary from {word_dict_path}')
-    word_dict = pickle.load(open(word_dict_path, 'rb'))
+    word_dict = data.Dictionary()  # do not use vocabulary in the dataset
     model = RLDocRetriever(config.get_model_args(args), word_dict)
 
     # Load pretrained embeddings for words in dictionary
     if args.embedding_file:
+        words = utils.index_embedding_words(args.embedding_file)
+        model.expand_dictionary(words)
         model.load_embeddings(model.word_dict, args.embedding_file)
-
-    model.add_search_engine(args, model.word_dict)
 
     return model
 
@@ -229,12 +225,12 @@ def train(args, data_loader, model, global_stats):
         if idx % args.display_iter == 0:
             logger.info(f'train: Epoch = {global_stats["epoch"]} | iter = {idx}/{ len(data_loader)} | ' +
                         f'loss = {train_loss.avg:.2f} | elapsed time = {global_stats["timer"].time():.2f} (s)')
-            metrics_last = {k: colored(f'{metrics_last[k]:.2f}', color='green')
+            metrics_last = {k: colored(f'{metrics_last[k]*100:.2f}%', color='green')
                             if metrics_first[k] < metrics_last[k]
-                            else colored(f'{metrics_last[k]:.2f}', color='red')
+                            else colored(f'{metrics_last[k]*100:.2f}%', color='red')
                             for k in metrics_names}
             if len(metrics_names):
-                logger.info(f'r0: ' + ' | '.join([f'{k}: {metrics_first[k]:.2f}' for k in metrics_names]))
+                logger.info(f'r0: ' + ' | '.join([f'{k}: {metrics_first[k]*100:.2f}%' for k in metrics_names]))
                 logger.info(f'r{args.reformulate_rounds}: ' +
                             ' | '.join([f'{k}: {metrics_last[k]}' for k in metrics_names]))
             train_loss.reset()
@@ -272,7 +268,7 @@ def validate(args, data_loader, model, global_stats, mode):
         if mode == 'train' and examples >= 1e4:
             break
 
-    logger.info(f'{mode} valid: Epoch = {global_stats["epoch"]} | {args.valid_metric} = {meter.avg:.2f} | ' +
+    logger.info(f'{mode} valid: Epoch = {global_stats["epoch"]} | {args.valid_metric} = {meter.avg*100:.2f}% | ' +
                 f'examples = {examples} | valid time = {eval_time.time():.2f} (s)')
 
     return {args.valid_metric: meter.avg}
@@ -410,8 +406,9 @@ def main(args):
 
         # Save best valid
         if result[args.valid_metric] > stats['best_valid']:
-            logger.info(f'Best valid: {args.valid_metric} = {result[args.valid_metric]:.2f} ' +
-                        f'(epoch {stats["epoch"]}, {model.updates} updates)')
+            logger.info(
+                colored(f'Best valid: {args.valid_metric} = {result[args.valid_metric]*100:.2f}% ', attrs=['bold']) +
+                colored(f'(epoch {stats["epoch"]}, {model.updates} updates)', attrs=['bold']))
             model.save(args.model_file)
             stats['best_valid'] = result[args.valid_metric]
 

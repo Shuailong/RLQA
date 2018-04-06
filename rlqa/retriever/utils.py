@@ -87,23 +87,23 @@ def normalize(text):
     return unicodedata.normalize('NFD', text)
 
 
-def clean(txt):
-    '''
-    # remove most of Wikipedia and AQUAINT markups, such as '[[', and ']]'.
-    '''
-    txt = re.sub(r'\|.*?\]\]', '', txt)  # remove link anchor
-    txt = txt.replace('&amp;', ' ').replace('&lt;', ' ').replace('&gt;', ' ')\
-        .replace('&quot;', ' ').replace('\'', ' ').replace('(', ' ')\
-        .replace(')', ' ').replace('.', ' ').replace('"', ' ')\
-        .replace(',', ' ').replace(';', ' ').replace(':', ' ')\
-        .replace('<93>', ' ').replace('<98>', ' ').replace('<99>', ' ')\
-        .replace('<9f>', ' ').replace('<80>', ' ').replace('<82>', ' ')\
-        .replace('<83>', ' ').replace('<84>', ' ').replace('<85>', ' ')\
-        .replace('<89>', ' ').replace('=', ' ').replace('*', ' ')\
-        .replace('\n', ' ').replace('!', ' ').replace('-', ' ')\
-        .replace('[[', ' ').replace(']]', ' ')
+# def clean(txt):
+#     '''
+#     # remove most of Wikipedia and AQUAINT markups, such as '[[', and ']]'.
+#     '''
+#     txt = re.sub(r'\|.*?\]\]', '', txt)  # remove link anchor
+#     txt = txt.replace('&amp;', ' ').replace('&lt;', ' ').replace('&gt;', ' ')\
+#         .replace('&quot;', ' ').replace('\'', ' ').replace('(', ' ')\
+#         .replace(')', ' ').replace('.', ' ').replace('"', ' ')\
+#         .replace(',', ' ').replace(';', ' ').replace(':', ' ')\
+#         .replace('<93>', ' ').replace('<98>', ' ').replace('<99>', ' ')\
+#         .replace('<9f>', ' ').replace('<80>', ' ').replace('<82>', ' ')\
+#         .replace('<83>', ' ').replace('<84>', ' ').replace('<85>', ' ')\
+#         .replace('<89>', ' ').replace('=', ' ').replace('*', ' ')\
+#         .replace('\n', ' ').replace('!', ' ').replace('-', ' ')\
+#         .replace('[[', ' ').replace(']]', ' ')
 
-    return txt
+#     return txt
 
 
 def filter_word(text):
@@ -167,42 +167,42 @@ def index_embedding_words(embedding_file):
     return words
 
 
-def load_words(args, examples):
-    """Iterate and index all the words in examples (questions)."""
-    if args.restrict_vocab and args.embedding_file:
-        logger.info(f'Restricting to words in {args.embedding_file}')
-        valid_words = index_embedding_words(args.embedding_file)
-        logger.info(f'Num words in set = {len(valid_words)}')
-    else:
-        valid_words = None
+# def load_words(args, examples):
+#     """Iterate and index all the words in examples (questions)."""
+#     if args.restrict_vocab and args.embedding_file:
+#         logger.info(f'Restricting to words in {args.embedding_file}')
+#         valid_words = index_embedding_words(args.embedding_file)
+#         logger.info(f'Num words in set = {len(valid_words)}')
+#     else:
+#         valid_words = None
 
-    words = set()
-    for ex in examples:
-        for word in ex['question']:
-            word = Dictionary.normalize(word)
-            if valid_words and word not in valid_words:
-                continue
-            if args.uncased_question:
-                word = word.lower()
-            words.add(word)
-        for ans in ex['answer']:
-            for word in Dictionary.normalize(word):
-                if valid_words and word not in valid_words:
-                    continue
-                if args.uncased_doc:
-                    word = word.lower()
-                words.add(word)
-    return words
+#     words = set()
+#     for ex in examples:
+#         for word in ex['question']:
+#             word = Dictionary.normalize(word)
+#             if valid_words and word not in valid_words:
+#                 continue
+#             if args.uncased_question:
+#                 word = word.lower()
+#             words.add(word)
+#         for ans in ex['answer']:
+#             for word in Dictionary.normalize(word):
+#                 if valid_words and word not in valid_words:
+#                     continue
+#                 if args.uncased_doc:
+#                     word = word.lower()
+#                 words.add(word)
+#     return words
 
 
-def build_word_dict(args, examples):
-    """Return a dictionary from question and document words in
-    provided examples.
-    """
-    word_dict = Dictionary()
-    for w in load_words(args, examples):
-        word_dict.add(w)
-    return word_dict
+# def build_word_dict(args, examples):
+#     """Return a dictionary from question and document words in
+#     provided examples.
+#     """
+#     word_dict = Dictionary()
+#     for w in load_words(args, examples):
+#         word_dict.add(w)
+#     return word_dict
 
 
 def top_question_words(args, examples, word_dict):
@@ -269,7 +269,12 @@ def metrics_by_title(title_truth, title_pred):
 
 
 def metrics_by_content(answer, doc_pred, match='string'):
-    """Search through all the top docs to see if they have the answer."""
+    """
+    Search through all the top docs to see if they have the answer.
+    match == 'token': answer: [[str]], doc_pred: [[str]]
+    match == 'string': answer: [str], doc_pred: [str]
+    match == 'regex': answer: [re], doc_pred: [str]
+    """
 
     def regex_match(text, pattern):
         """Test if a regex pattern is contained within a text."""
@@ -283,11 +288,15 @@ def metrics_by_content(answer, doc_pred, match='string'):
         return pattern.search(text) is not None
 
     def has_answer(answer, doc, match):
-        if match == 'string':
+        if match == 'token':
             for single_answer in answer:
-                for i in range(len(doc) - len(single_answer) - 1):
+                for i in range(len(doc) - len(single_answer) + 1):
                     if single_answer == doc[i: i + len(single_answer)]:
                         return True
+        elif match == 'string':
+            for single_answer in answer:
+                if single_answer in doc:
+                    return True
         elif match == 'regex':
             single_answer = answer[0]
             if regex_match(doc, single_answer):

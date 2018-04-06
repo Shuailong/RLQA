@@ -42,7 +42,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('dataset', type=str, default=None,
                         help='SQuAD-like dataset to evaluate on (txt format)')
-    parser.add_argument('--model', type=str, default='20180405-6444acd0.mdl',
+    parser.add_argument('--model', type=str, default='20180406-e8c039e7.mdl',
                         help='Path to model to use')
     parser.add_argument('--data-workers', type=int, default=5,
                         help='Number of subprocesses for data loading')
@@ -50,7 +50,7 @@ if __name__ == '__main__':
                         help='Use CPU only')
     parser.add_argument('--gpu', type=int, default=-1,
                         help='Specify GPU device id to use')
-    parser.add_argument('--batch-size', type=int, default=10,
+    parser.add_argument('--batch-size', type=int, default=20,
                         help='Example batching size')
     parser.add_argument('--candidate_doc_max', type=int, default=5,
                         help='retrieve top n docs per question')
@@ -59,10 +59,14 @@ if __name__ == '__main__':
     parser.add_argument('--metrics', type=str, choices=['precision', 'recall', 'F1', 'map', 'hit'],
                         help='metrics to display when training', nargs='+',
                         default=['precision', 'hit'])
-    parser.add_argument('--reformulate-rounds', type=int, default=1,
+    parser.add_argument('--reformulate-rounds', type=int, default=0,
                         help='query reformulate rounds')
     parser.add_argument('--search-engine', type=str, default='lucene', choices=['lucene', 'tfidf_ranker'],
                         help='search engine')
+    parser.add_argument('--match', type=str, default='token',
+                        choices=['regex', 'string', 'title', 'token'])
+    parser.add_argument('--similarity', type=str, default='classic', choices=['classic', 'bm25'],
+                        help='lucene search similarity')
 
     args = parser.parse_args()
 
@@ -78,7 +82,6 @@ if __name__ == '__main__':
     model_path = os.path.join(MODEL_DIR, args.model)
     logger.info('-' * 100)
     model = RLDocRetriever.load(model_path or DEFAULTS['model'], new_args=args)
-    model.add_search_engine(model.args, model.word_dict)
     if args.cuda:
         model.cuda()
 
@@ -130,4 +133,4 @@ if __name__ == '__main__':
         metrics_last = {k: np.mean([m[k] for m in metrics[-1]]).item() for k in args.metrics}
         [meters[k].update(metrics_last[k], batch_size) for k in meters]
 
-    logger.info(' | '.join([f'{k}: {meters[k].avg:.2f}' for k in args.metrics]))
+    logger.info(' | '.join([f'{k}: {meters[k].avg * 100 :.2f}%' for k in args.metrics]))

@@ -25,10 +25,11 @@ from org.apache.lucene.index import DirectoryReader, IndexWriter, IndexWriterCon
 from org.apache.lucene.store import MMapDirectory
 from org.apache.lucene.search import IndexSearcher, MatchAllDocsQuery
 from org.apache.lucene.queryparser.classic import QueryParser
+from org.apache.lucene.search.similarities import BM25Similarity, ClassicSimilarity
 
 from .. import tokenizers
 from .. import DATA_DIR as RLQA_DATA
-from .utils import clean
+from . import utils
 from .doc_db import DocDB
 
 
@@ -39,11 +40,10 @@ DATA_DIR = os.path.join(RLQA_DATA, 'wikipedia')
 
 class LuceneSearch(object):
 
-    def __init__(self, args, word_dict):
+    def __init__(self, args):
 
         self.env = lucene.initVM()
         self.args = args
-        self.word_dict = word_dict
         self.tokenizer = tokenizers.get_class(args.tokenizer)()
         self.doc_db = DocDB()
 
@@ -54,6 +54,12 @@ class LuceneSearch(object):
 
         fsDir = MMapDirectory(Paths.get(index_folder))
         self.searcher = IndexSearcher(DirectoryReader.open(fsDir))
+        if args.similarity == 'classic':
+            logger.info('Use Classic similarity for lucene searcher.')
+            self.searcher.setSimilarity(ClassicSimilarity())
+        else:
+            logger.info('Use BM25 similarity for lucene searcher.')
+            self.searcher.setSimilarity(BM25Similarity())
         self.analyzer = StandardAnalyzer()
         self.pool = ThreadPool(processes=args.num_search_workers)
         self.cache = {}
@@ -94,10 +100,9 @@ class LuceneSearch(object):
         doc.add(Field("text", txt, self.t2))
 
         if add_terms:
-            words = self.tokenizer.tokenize(clean(txt)).words(uncased=True)
-            words_idx = [self.word_dict[w] for w in words]
-            doc.add(Field("word_idx", ' '.join(map(str, words_idx)), self.t3))
+            words = self.tokenizer.tokenize(utils.normalize(txt)).words(uncased=True)
             doc.add(Field("word", '<&>'.join(words), self.t3))
+            doc.add(Field("fulltext", txt, self.t3))
 
         self.writer.addDocument(doc)
 
@@ -118,6 +123,12 @@ class LuceneSearch(object):
 
         fsDir = MMapDirectory(Paths.get(index_folder))
         writerConfig = IndexWriterConfig(StandardAnalyzer())
+        if self.args.similarity == 'classic':
+            logger.info('Use Classic similarity for lucene writer.')
+            writerConfig.setSimilarity(ClassicSimilarity())
+        else:
+            logger.info('Use BM25 similarity for lucene writer.')
+            writerConfig.setSimilarity(BM25Similarity())
         self.writer = IndexWriter(fsDir, writerConfig)
         logger.info(f"{self.writer.numDocs()} docs in index")
         logger.info("Indexing documents...")
@@ -153,18 +164,22 @@ class LuceneSearch(object):
                 q = 'dummy'
                 query = QueryParser("text", self.analyzer).parse(QueryParser.escape(q))
 
-            doc_titles, words_idxs, words = [], [], []
+            doc_scores, doc_titles, doc_texts, doc_words = [], [], [], []
             hits = self.curr_searcher.search(query, self.ranker_doc_max)
 
             for i, hit in enumerate(hits.scoreDocs):
                 doc = self.curr_searcher.doc(hit.doc)
-                word_idx = list(map(int, doc['word_idx'].split(' ')))
-                word = doc['word'].split('<&>')
 
-                doc_titles.append(self.id_title_map[int(doc['id'])])
-                words_idxs.append(word_idx)
-                words.append(word)
-            return doc_titles, words_idxs, words
+                doc_score = hit.score
+                doc_title = self.id_title_map[int(doc['id'])]
+                doc_word = doc['word'].split('<&>')
+                doc_text = doc['fulltext']
+
+                doc_scores.append(doc_score)
+                doc_titles.append(doc_title)
+                doc_words.append(doc_word)
+                doc_texts.append(doc_text)
+            return doc_scores, doc_titles, doc_texts, doc_words
 
     def search_singlethread(self, qs, ranker_doc_max, curr_searcher):
         out = []
@@ -180,19 +195,23 @@ class LuceneSearch(object):
                     logger.info('Using query "dummy".')
                     query = QueryParser("text", self.analyzer).parse(QueryParser.escape('dummy'))
 
-                doc_titles, words_idxs, words = [], [], []
+                doc_scores, doc_titles, doc_texts, doc_words = [], [], [], []
                 hits = curr_searcher.search(query, ranker_doc_max)
 
                 for i, hit in enumerate(hits.scoreDocs):
-                    doc = curr_searcher.doc(hit.doc)
-                    word_idx = map(int, doc['word_idx'].split(' '))
-                    word = doc['word'].split('<&>')
+                    doc = self.curr_searcher.doc(hit.doc)
 
-                    doc_titles.append(self.id_title_map[int(doc['id'])])
-                    words_idxs.append(word_idx)
-                    words.append(word)
+                    doc_score = hit.score
+                    doc_title = self.id_title_map[int(doc['id'])]
+                    doc_word = doc['word'].split('<&>')
+                    doc_text = doc['fulltext']
 
-                out.append((doc_titles, words_idxs, words))
+                    doc_scores.append(doc_score)
+                    doc_titles.append(doc_title)
+                    doc_words.append(doc_word)
+                    doc_texts.append(doc_text)
+
+                out.append((doc_scores, doc_titles, doc_texts, doc_words))
 
         return out
 

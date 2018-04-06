@@ -58,6 +58,12 @@ class RLDocRetriever(object):
         else:
             raise RuntimeError(f'Unsupported model: {args.model_type}')
 
+        logger.info(f'Initialize {args.search_engine} search engine.')
+        if args.search_engine == 'lucene':
+            self.search_engine = LuceneSearch(self.args)
+        else:
+            self.search_engine = TfidfDocRanker(self.args)
+
         # Load saved state
         if state_dict:
             # Load buffer separately
@@ -68,14 +74,6 @@ class RLDocRetriever(object):
                     'fixed_embedding', fixed_embedding)
             else:
                 self.network.load_state_dict(state_dict)
-
-    def add_search_engine(self, args, word_dict):
-        '''
-        '''
-        if args.search_engine == 'lucene':
-            self.search_engine = LuceneSearch(args, word_dict)
-        else:
-            self.search_engine = TfidfDocRanker(args, word_dict)
 
     def expand_dictionary(self, words):
         """Add words to the DocReader dictionary if they do not exist. The
@@ -218,11 +216,12 @@ class RLDocRetriever(object):
         # Train mode
         self.network.train()
 
-        questions, answers, docs_truth = ex
+        questions, question_tokens, answers, answer_tokens, docs_truth = ex
         # questions: [[word]]
 
         metricss, reward_baselines, probss, selectionss = self.play(
-            questions, answers=answers, docs_truth=docs_truth, train=True)
+            questions, question_tokens, answers=answers, answer_tokens=answer_tokens,
+            docs_truth=docs_truth, train=True)
 
         losses = []
         for i in range(len(questions)):
@@ -270,11 +269,13 @@ class RLDocRetriever(object):
         # Eval mode
         self.network.eval()
 
-        questions, answers, docs_truth = ex
-        metrics, _, _, _ = self.play(questions, answers=answers, docs_truth=docs_truth, train=False)
+        questions, question_tokens, answers, answer_tokens, docs_truth = ex
+        metrics, _, _, _ = self.play(
+            questions, question_tokens, answers=answers, answer_tokens=answer_tokens,
+            docs_truth=docs_truth, train=False)
         return len(questions), metrics
 
-    def play(self, questions, answers=None, docs_truth=None, train=True):
+    def play(self, questions, question_tokens, answers=None, answer_tokens=None, docs_truth=None, train=True):
         '''
         '''
         metrics_rounds = []
@@ -283,27 +284,30 @@ class RLDocRetriever(object):
         selections_rounds = []
 
         # retrieve docs
-        question_str = [' '.join(q) for q in questions]
-        results = self.search_engine.batch_closest_docs(question_str, ranker_doc_max=self.args.ranker_doc_max)
+        results = self.search_engine.batch_closest_docs(questions, ranker_doc_max=self.args.ranker_doc_max)
 
-        titles_pred, docs_idx_pred, docs_pred = zip(*results)
-        docs_idx_pred = [[d[:self.args.candidate_term_max]
-                          for d in doc_idx_pred[:self.args.candidate_doc_max]]for doc_idx_pred in docs_idx_pred]
-        docs_pred = [[d[:self.args.candidate_term_max]
-                      for d in doc_pred[:self.args.candidate_doc_max]] for doc_pred in docs_pred]
+        doc_scores, doc_titles, doc_texts, doc_words = zip(*results)
 
-        if self.args.match in {'string', 'regex'} and answers:
-            metrics = [utils.metrics_by_content(answer, doc_pred, match=self.args.match)
-                       for (answer, doc_pred) in zip(answers, docs_pred)]
+        if self.args.match == 'token' and answer_tokens:
+            metrics = [utils.metrics_by_content(answer_token, doc_word, match=self.args.match)
+                       for (answer_token, doc_word) in zip(answer_tokens, doc_words)]
+            metrics_rounds.append(metrics)
+        elif self.args.match in {'regex', 'string'} and answers:
+            metrics = [utils.metrics_by_content(answer, doc_text, match=self.args.match)
+                       for (answer, doc_text) in zip(answers, doc_texts)]
             metrics_rounds.append(metrics)
         elif self.args.match == 'title' and docs_truth:
-            metrics = [utils.metrics_by_title(doc_truth, title_pred)
-                       for (doc_truth, title_pred) in zip(docs_truth, titles_pred)]
+            metrics = [utils.metrics_by_title(doc_truth, doc_title)
+                       for (doc_truth, doc_title) in zip(docs_truth, doc_titles)]
             metrics_rounds.append(metrics)
+
+        doc_words = [[d[:self.args.candidate_term_max]
+                      for d in doc_word[:self.args.candidate_doc_max]] for doc_word in doc_words]
+        doc_idxs = [[[self.word_dict[w] for w in word] for word in doc_word] for doc_word in doc_words]
 
         for r in range(self.args.reformulate_rounds):
             # vectorize questions
-            questions_tensors = [torch.LongTensor([self.word_dict[w] for w in q]) for q in questions]
+            questions_tensors = [torch.LongTensor([self.word_dict[w] for w in q]) for q in question_tokens]
             # Batch questions
             max_q_length = max([q.size(0) for q in questions_tensors])
             x1 = torch.LongTensor(len(questions_tensors), max_q_length).zero_()
@@ -321,17 +325,17 @@ class RLDocRetriever(object):
             pad_size = (self.args.context_window_size - 1) // 2
             if train:
                 # train time: sample a doc
-                rand_idx = [np.random.randint(len(doc_idx)) for doc_idx in docs_idx_pred]
-                docs_idx_pred = [doc_idx[rand_idx[i]] for i, doc_idx in enumerate(docs_idx_pred)]
-                candidate_terms = [doc_pred[rand_idx[i]] for i, doc_pred in enumerate(docs_pred)]
-                term_idxs_pad = [[0] * pad_size + d + [0] * pad_size for d in docs_idx_pred]
+                rand_idx = [np.random.randint(len(doc_idx)) for doc_idx in doc_idxs]
+                doc_idxs = [doc_idx[rand_idx[i]] for i, doc_idx in enumerate(doc_idxs)]
+                candidate_terms = [doc_word[rand_idx[i]] for i, doc_word in enumerate(doc_words)]
+                term_idxs_pad = [[0] * pad_size + d + [0] * pad_size for d in doc_idxs]
                 term_idxs_ctxs = [[d[i - pad_size:i + pad_size + 1]
                                    for i in range(len(d)) if i >= pad_size and i <= len(d) - pad_size - 1]
                                   for d in term_idxs_pad]
             else:
-                candidate_terms = [list(itertools.chain(*doc_pred)) for i, doc_pred in enumerate(docs_pred)]
+                candidate_terms = [list(itertools.chain(*doc_word)) for i, doc_word in enumerate(doc_words)]
 
-                term_idxs_pad = [[[0] * pad_size + d + [0] * pad_size for d in ds] for ds in docs_idx_pred]
+                term_idxs_pad = [[[0] * pad_size + d + [0] * pad_size for d in ds] for ds in doc_idxs]
                 term_idxs_ctxs = [[d[i - pad_size:i + pad_size + 1]
                                    for d in ds for i in range(len(d)) if i >= pad_size and i <= len(d) - pad_size - 1]
                                   for ds in term_idxs_pad]
@@ -368,35 +372,43 @@ class RLDocRetriever(object):
             # Compute loss and accuracies
             additional_terms, selections = self.sample_candidate_terms(candidate_terms, probs, train=train)
 
-            questions_extended = [question_str[i] + ' ' + ' '.join(doc_terms)
-                                  for i, doc_terms in enumerate(additional_terms)]
-            # # debug
-            # sel = np.random.randint(len(question_str))
-            # logger.debug(colored(f'{question_str[sel]}', 'yellow') + ' | ' +
-            #              colored(f'{questions_extended[sel]}', 'blue'))
-            results = self.search_engine.batch_closest_docs(questions_extended, ranker_doc_max=self.args.ranker_doc_max)
-            titles_pred, docs_idx_pred, docs_pred = zip(*results)
-
-            if self.args.match in {'string', 'regex'} and answers:
-                metrics = [utils.metrics_by_content(answer, doc_pred, match=self.args.match)
-                           for (answer, doc_pred) in zip(answers, docs_pred)]
-                metrics_rounds.append(metrics)
-            elif self.args.match == 'title' and docs_truth:
-                metrics = [utils.metrics_by_title(doc_truth, title_pred)
-                           for (doc_truth, title_pred) in zip(docs_truth, titles_pred)]
-                metrics_rounds.append(metrics)
-
             rewards_bl_rounds.append(reward_baseline)
             probs_rounds.append(probs)
             selections_rounds.append(selections)
 
-            questions = [q.split(' ') for q in questions_extended]
+            questions = [questions[i] + ' ' + ' '.join(doc_terms)
+                         for i, doc_terms in enumerate(additional_terms)]
+            question_tokens = [question_tokens[i] + doc_terms
+                               for i, doc_terms in enumerate(additional_terms)]
+            # # debug
+            # sel = np.random.randint(len(questions))
+            # logger.debug(colored(f'{questions[sel]}', 'yellow') + ' | ' +
+            #              colored(f'{questions[sel]}', 'blue'))
+            results = self.search_engine.batch_closest_docs(questions, ranker_doc_max=self.args.ranker_doc_max)
+            doc_scores, doc_titles, doc_texts, doc_words = zip(*results)
+
+            if self.args.match == 'token' and answer_tokens:
+                metrics = [utils.metrics_by_content(answer_token, doc_word, match=self.args.match)
+                           for (answer_token, doc_word) in zip(answer_tokens, doc_words)]
+                metrics_rounds.append(metrics)
+            elif self.args.match in {'regex', 'string'} and answers:
+                metrics = [utils.metrics_by_content(answer, doc_text, match=self.args.match)
+                           for (answer, doc_text) in zip(answers, doc_texts)]
+                metrics_rounds.append(metrics)
+            elif self.args.match == 'title' and docs_truth:
+                metrics = [utils.metrics_by_title(doc_truth, doc_title)
+                           for (doc_truth, doc_title) in zip(docs_truth, doc_titles)]
+                metrics_rounds.append(metrics)
+
+            doc_words = [[d[:self.args.candidate_term_max]
+                          for d in doc_word[:self.args.candidate_doc_max]] for doc_word in doc_words]
+            doc_idxs = [[[self.word_dict[w] for w in word] for word in doc_word] for doc_word in doc_words]
 
         if docs_truth or answers:
             # train/validate phase
             return metrics_rounds, rewards_bl_rounds, probs_rounds, selections_rounds
         else:
-            return titles_pred, questions
+            return doc_titles, doc_scores, questions
 
     @staticmethod
     def sample_candidate_terms(docs, probs, train=True, epsilon=1):
