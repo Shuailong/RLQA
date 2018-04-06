@@ -52,11 +52,12 @@ class RLDocRetriever(object):
         self.use_cuda = False
         self.parallel = False
 
-        # Building network.
-        if args.model_type == 'rnn':
-            self.network = Reformulator(args)
-        else:
-            raise RuntimeError(f'Unsupported model: {args.model_type}')
+        if args.reformulate_rounds > 0:
+            # Building network.
+            if args.model_type == 'rnn':
+                self.network = Reformulator(args)
+            else:
+                raise RuntimeError(f'Unsupported model: {args.model_type}')
 
         logger.info(f'Initialize {args.search_engine} search engine.')
         if args.search_engine == 'lucene':
@@ -65,15 +66,16 @@ class RLDocRetriever(object):
             self.search_engine = TfidfDocRanker(self.args)
 
         # Load saved state
-        if state_dict:
-            # Load buffer separately
-            if 'fixed_embedding' in state_dict:
-                fixed_embedding = state_dict.pop('fixed_embedding')
-                self.network.load_state_dict(state_dict)
-                self.network.register_buffer(
-                    'fixed_embedding', fixed_embedding)
-            else:
-                self.network.load_state_dict(state_dict)
+        if args.reformulate_rounds > 0:
+            if state_dict:
+                # Load buffer separately
+                if 'fixed_embedding' in state_dict:
+                    fixed_embedding = state_dict.pop('fixed_embedding')
+                    self.network.load_state_dict(state_dict)
+                    self.network.register_buffer(
+                        'fixed_embedding', fixed_embedding)
+                else:
+                    self.network.load_state_dict(state_dict)
 
     def expand_dictionary(self, words):
         """Add words to the DocReader dictionary if they do not exist. The
@@ -266,8 +268,9 @@ class RLDocRetriever(object):
     def retrieve(self, ex):
         """
         """
-        # Eval mode
-        self.network.eval()
+        if self.args.reformulate_rounds > 0:
+            # Eval mode
+            self.network.eval()
 
         questions, question_tokens, answers, answer_tokens, docs_truth = ex
         metrics, _, _, _ = self.play(

@@ -41,6 +41,7 @@ class TfidfDocRanker(object):
         self.ngrams = metadata['ngram']
         self.hash_size = metadata['hash_size']
         self.tokenizer = tokenizers.get_class(metadata['tokenizer'])()
+        self.doc_tokenizer = tokenizers.get_class('regexp')()
         self.doc_freqs = metadata['doc_freqs'].squeeze()
         self.doc_dict = metadata['doc_dict']
         self.num_docs = len(self.doc_dict[0])
@@ -79,7 +80,7 @@ class TfidfDocRanker(object):
                 doc_word = self.word_cache[doc_title]
             else:
                 doc_text = self.doc_db.get_doc_text(doc_title)
-                doc_word = self.tokenizer.tokenize(utils.normalize(doc_text)).words(uncased=True)
+                doc_word = self.doc_tokenizer.tokenize(utils.normalize(doc_text)).words(uncased=True)
                 self.text_cache[doc_title] = doc_text
                 self.word_cache[doc_title] = doc_word
             doc_texts.append(doc_text)

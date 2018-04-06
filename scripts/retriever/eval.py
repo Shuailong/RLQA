@@ -82,7 +82,7 @@ if __name__ == '__main__':
     model_path = os.path.join(MODEL_DIR, args.model)
     logger.info('-' * 100)
     model = RLDocRetriever.load(model_path or DEFAULTS['model'], new_args=args)
-    if args.cuda:
+    if args.cuda and args.reformulate_rounds > 0:
         model.cuda()
 
     # --------------------------------------------------------------------------

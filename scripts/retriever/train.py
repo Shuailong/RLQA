@@ -107,7 +107,7 @@ def add_train_args(parser):
                             help='Only use pre-trained words in embedding_file')
     preprocess.add_argument('--restrict-vocab-size', type=int, default=None,
                             help='Only use this number of external vocabulary')
-    preprocess.add_argument('--tokenizer', type=str, default='corenlp')
+    preprocess.add_argument('--tokenizer', type=str, default='regexp')
 
     # General
     general = parser.add_argument_group('General')

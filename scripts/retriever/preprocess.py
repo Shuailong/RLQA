@@ -71,7 +71,7 @@ parser.add_argument('--out_dir', type=str, help='Path to output file dir',
                     default='data/datasets')
 parser.add_argument('--file', type=str, help='Filename for train/dev split')
 parser.add_argument('--tokenizer', type=str, help='tokenizer to tokenize questions',
-                    default='corenlp')
+                    default='regexp')
 parser.add_argument('--match', type=str, default='token', choices=['regex', 'string', 'title', 'token'],
                     help='only tokenize answers when match == "string"')
 
