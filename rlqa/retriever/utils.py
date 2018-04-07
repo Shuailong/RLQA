@@ -295,6 +295,8 @@ def metrics_by_content(answer, doc_pred, match='string'):
                         return True
         elif match == 'string':
             for single_answer in answer:
+                single_answer = normalize(single_answer).lower()
+                doc = normalize(doc).lower()
                 if single_answer in doc:
                     return True
         elif match == 'regex':
