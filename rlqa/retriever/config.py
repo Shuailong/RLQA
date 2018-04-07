@@ -23,14 +23,15 @@ MODEL_OPTIMIZER = {
     'fix_embeddings', 'optimizer', 'learning_rate', 'momentum', 'weight_decay',
     'rnn_padding', 'dropout_rnn', 'dropout_rnn_output', 'dropout_emb',
     'grad_clipping', 'tune_partial', 'entropy_regularizer', 'term_epsilon',
-    'stablize_alpha', 'reformulate_rounds', 'search_engine', 'ranker_doc_max', 'match', 'similarity'
+    'stablize_alpha', 'reformulate_rounds', 'search_engine', 'ranker_doc_max',
+    'index_folder', 'match', 'similarity'
 }
 
 # Index of arguments concerning the model RL training
 MODEL_OTHERS = {
     'candidate_term_max', 'candidate_doc_max',
     'context_window_size', 'num_search_workers',
-    'index_folder', 'cache_search_result',
+    'cache_search_result',
     'uncased_question', 'uncased_doc', 'tokenizer'
 }
 

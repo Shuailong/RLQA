@@ -42,7 +42,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('dataset', type=str, default=None,
                         help='SQuAD-like dataset to evaluate on (txt format)')
-    parser.add_argument('--model', type=str, default='20180406-e8c039e7.mdl',
+    parser.add_argument('--model', type=str, default='20180407-2865e727.mdl',
                         help='Path to model to use')
     parser.add_argument('--data-workers', type=int, default=5,
                         help='Number of subprocesses for data loading')
@@ -67,6 +67,8 @@ if __name__ == '__main__':
                         choices=['regex', 'string', 'title', 'token'])
     parser.add_argument('--similarity', type=str, default='classic', choices=['classic', 'bm25'],
                         help='lucene search similarity')
+    parser.add_argument('--index-folder', type=str, default='index-full-text',
+                        help='folder to store lucene\'s index')
 
     args = parser.parse_args()
 

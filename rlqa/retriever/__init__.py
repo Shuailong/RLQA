@@ -11,7 +11,7 @@ from ..tokenizers import CoreNLPTokenizer
 from .. import DATA_DIR
 
 DEFAULTS = {
-    'db_path': os.path.join(DATA_DIR, 'wikipedia/docs.db'),
+    'db_path': os.path.join(DATA_DIR, 'wikipedia/docs_tokens.db'),
     'model': os.path.join(
         DATA_DIR,
         'rlmodels/best.model'

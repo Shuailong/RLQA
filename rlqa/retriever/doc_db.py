@@ -54,3 +54,14 @@ class DocDB(object):
         result = cursor.fetchone()
         cursor.close()
         return result if result is None else result[0]
+
+    def get_doc_tokens(self, doc_id):
+        """Fetch the tokens of the doc for 'doc_id'."""
+        cursor = self.connection.cursor()
+        cursor.execute(
+            "SELECT tokens FROM documents WHERE id = ?",
+            (utils.normalize(doc_id),)
+        )
+        result = cursor.fetchone()
+        cursor.close()
+        return result if result is None else result[0]
