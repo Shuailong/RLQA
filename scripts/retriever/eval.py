@@ -42,7 +42,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('dataset', type=str, default=None,
                         help='SQuAD-like dataset to evaluate on (txt format)')
-    parser.add_argument('--model', type=str, default='20180407-2865e727.mdl',
+    parser.add_argument('--model', type=str, default=None, required=True,
                         help='Path to model to use')
     parser.add_argument('--data-workers', type=int, default=5,
                         help='Number of subprocesses for data loading')

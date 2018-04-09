@@ -27,7 +27,7 @@ class TfidfDocRanker(object):
     Scores new queries by taking sparse dot products.
     """
 
-    def __init__(self, args, tfidf_path=None, strict=True):
+    def __init__(self, args, tfidf_path=None, db_path=None, strict=True):
         """
         Args:
             tfidf_path: path to saved model file
@@ -35,7 +35,7 @@ class TfidfDocRanker(object):
         # Load from disk
         self.args = args
         tfidf_path = tfidf_path or DEFAULTS['tfidf_path']
-        logger.info('Loading %s' % tfidf_path)
+        logger.info(f'Loading {tfidf_path}')
         matrix, metadata = utils.load_sparse_csr(tfidf_path)
         self.doc_mat = matrix
         self.ngrams = metadata['ngram']
@@ -44,9 +44,9 @@ class TfidfDocRanker(object):
         self.doc_freqs = metadata['doc_freqs'].squeeze()
         self.doc_dict = metadata['doc_dict']
         self.num_docs = len(self.doc_dict[0])
-        self.doc_db = DocDB()
-
-        self.text_cache, self.word_cache = {}, {}
+        db_path = db_path or DEFAULTS['db_path']
+        logger.info(f'Loading {db_path}')
+        self.doc_db = DocDB(db_path=db_path)
 
     def get_doc_index(self, doc_id):
         """Convert doc_id --> doc_index"""
@@ -74,14 +74,8 @@ class TfidfDocRanker(object):
         doc_scores = res.data[o_sort]
         doc_texts, doc_words = [], []
         for doc_title in doc_titles:
-            if doc_title in self.text_cache:
-                doc_text = self.text_cache[doc_title]
-                doc_word = self.word_cache[doc_title]
-            else:
-                doc_text = self.doc_db.get_doc_text(doc_title)
-                doc_word = self.doc_db.get_doc_tokens(doc_title)
-                self.text_cache[doc_title] = doc_text
-                self.word_cache[doc_title] = doc_word
+            doc_text = self.doc_db.get_doc_text(doc_title)
+            doc_word = self.doc_db.get_doc_tokens(doc_title)
             doc_texts.append(doc_text)
             doc_words.append(doc_word)
         return doc_scores, doc_titles, doc_texts, doc_words
