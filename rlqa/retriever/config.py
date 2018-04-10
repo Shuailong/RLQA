@@ -31,7 +31,7 @@ MODEL_OPTIMIZER = {
 MODEL_OTHERS = {
     'candidate_term_max', 'candidate_doc_max',
     'context_window_size', 'num_search_workers',
-    'cache_search_result',
+    'cache_search_result', 'reward',
     'uncased_question', 'uncased_doc', 'tokenizer'
 }
 
@@ -91,22 +91,24 @@ def add_model_args(parser):
 
     # RL Training hyperparams
     rl_params = parser.add_argument_group('RLQA Retriever Doc Selection')
-    rl_params.add_argument('--match', type=str, default='token',
+    rl_params.add_argument('--match', type=str, default='string',
                            choices=['regex', 'string', 'title', 'token'])
     rl_params.add_argument('--candidate-term-max', type=int, default=300,
                            help='First M words to select from the candidate doc')
     rl_params.add_argument('--candidate-doc-max', type=int, default=5,
                            help='First K docs to select as candidate doc')
-    rl_params.add_argument('--ranker-doc-max', type=int, default=40,
+    rl_params.add_argument('--ranker-doc-max', type=int, default=5,
                            help='First k docs to returned by ranker')
     rl_params.add_argument('--context-window-size', type=int, default=5,
                            help='context window size for candidate terms. should be odd number.')
     rl_params.add_argument('--reformulate-rounds', type=int, default=1,
                            help='query reformulate rounds')
+    rl_params.add_argument('--reward', type=str, default='hit', choices=['precision', 'recall', 'F1', 'map', 'hit'],
+                           help='reward to train the reformulator')
 
     # Search Engine settings
     search = parser.add_argument_group('RLQA Retriever Search Engine')
-    search.add_argument('--search-engine', type=str, default='lucene', choices=['lucene', 'tfidf_ranker'],
+    search.add_argument('--search-engine', type=str, default='tfidf_ranker', choices=['lucene', 'tfidf_ranker'],
                         help='search engine')
     search.add_argument('--num-search-workers', type=int, default=20,
                         help='search engine workers')

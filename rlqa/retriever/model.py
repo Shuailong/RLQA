@@ -229,12 +229,14 @@ class RLDocRetriever(object):
         for i in range(len(questions)):
             sample_loss = []
             for r in range(self.args.reformulate_rounds):
+                reward_delta = metricss[r + 1][i][self.args.reward] - metricss[r][i][self.args.reward]
+                # if reward_delta != 0:
+                #     logger.debug(colored(
+                #         f'reward delta: {reward_delta} | old: {metricss[r][i][self.args.reward]} | new: {metricss[r + 1][i][self.args.reward]}', 'yellow'))
                 # C_a
-                cost_a = -(metricss[r + 1][i]['recall'] - metricss[r][i]['recall'] -
-                           reward_baselines[r][i]) * (probss[r][i].log() * selectionss[r][i]).sum()
+                cost_a = -(reward_delta - reward_baselines[r][i]) * (probss[r][i].log() * selectionss[r][i]).sum()
                 # C_b
-                cost_b = self.args.stablize_alpha * \
-                    (metricss[r + 1][i]['recall'] - metricss[r][i]['recall'] - reward_baselines[r][i]) ** 2
+                cost_b = self.args.stablize_alpha * (reward_delta - reward_baselines[r][i]) ** 2
                 # C_H
                 cost_H = -self.args.entropy_regularizer * (probss[r][i] * probss[r][i].log()).sum()
                 round_loss = cost_a + cost_b + cost_H

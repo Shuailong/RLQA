@@ -61,9 +61,9 @@ if __name__ == '__main__':
                         default=['precision', 'hit'])
     parser.add_argument('--reformulate-rounds', type=int, default=0,
                         help='query reformulate rounds')
-    parser.add_argument('--search-engine', type=str, default='lucene', choices=['lucene', 'tfidf_ranker'],
+    parser.add_argument('--search-engine', type=str, default='tfidf_ranker', choices=['lucene', 'tfidf_ranker'],
                         help='search engine')
-    parser.add_argument('--match', type=str, default='token',
+    parser.add_argument('--match', type=str, default='string',
                         choices=['regex', 'string', 'title', 'token'])
     parser.add_argument('--similarity', type=str, default='classic', choices=['classic', 'bm25'],
                         help='lucene search similarity')
