@@ -72,7 +72,7 @@ class LuceneSearch(object):
         doc.add(Field("text", txt, self.t2))
 
         if add_terms:
-            words = ['a'] # self.tokenizer.tokenize(utils.normalize(txt)).words(uncased=True)
+            words = self.tokenizer.tokenize(utils.normalize(txt)).words(uncased=True)
             doc.add(Field("word", '<&>'.join(words), self.t3))
             doc.add(Field("fulltext", txt, self.t3))
 
