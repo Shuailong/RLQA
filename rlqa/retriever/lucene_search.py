@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 import lucene
 from java.nio.file import Paths
-from org.apache.lucene.analysis.standard import StandardAnalyzer
+from org.apache.lucene.analysis.standard import ClassicAnalyzer
 from org.apache.lucene.document import Document, Field, FieldType
 from org.apache.lucene.index import DirectoryReader, IndexWriter, IndexWriterConfig, IndexOptions
 from org.apache.lucene.store import MMapDirectory
@@ -60,37 +60,9 @@ class LuceneSearch(object):
         else:
             logger.info('Use BM25 similarity for lucene searcher.')
             self.searcher.setSimilarity(BM25Similarity())
-        self.analyzer = StandardAnalyzer()
+        self.analyzer = ClassicAnalyzer()
         self.pool = ThreadPool(processes=args.num_search_workers)
-        self.cache = {}
 
-        logger.info('Loading Title-ID mapping...')
-        cache_file = os.path.join(DATA_DIR, 'title-id.pkl')
-        if os.path.isfile(cache_file):
-            logger.info(f'Cache file {cache_file} exists. Load from cache file.')
-            self.title_id_map, self.id_title_map = pickle.load(open(cache_file, 'rb'))
-        else:
-            self.title_id_map, self.id_title_map = self.get_title_id_map()
-            pickle.dump((self.title_id_map, self.id_title_map), open(cache_file, 'wb'))
-            logger.info(f'Dump Title-ID mapping into {cache_file}.')
-
-    def get_title_id_map(self):
-
-        # get number of docs
-        n_docs = self.searcher.getIndexReader().numDocs()
-
-        title_id = {}
-        id_title = {}
-        query = MatchAllDocsQuery()
-        hits = self.searcher.search(query, n_docs)
-        for hit in tqdm(hits.scoreDocs, total=n_docs):
-            doc = self.searcher.doc(hit.doc)
-            idd = int(doc['id'])
-            title = doc['title']
-            title_id[title] = idd
-            id_title[idd] = title
-
-        return title_id, id_title
 
     def add_doc(self, doc_idx, title, txt, add_terms):
 
@@ -100,7 +72,7 @@ class LuceneSearch(object):
         doc.add(Field("text", txt, self.t2))
 
         if add_terms:
-            words = self.tokenizer.tokenize(utils.normalize(txt)).words(uncased=True)
+            words = ['a'] # self.tokenizer.tokenize(utils.normalize(txt)).words(uncased=True)
             doc.add(Field("word", '<&>'.join(words), self.t3))
             doc.add(Field("fulltext", txt, self.t3))
 
@@ -122,7 +94,7 @@ class LuceneSearch(object):
         self.t3.setIndexOptions(IndexOptions.NONE)
 
         fsDir = MMapDirectory(Paths.get(index_folder))
-        writerConfig = IndexWriterConfig(StandardAnalyzer())
+        writerConfig = IndexWriterConfig(ClassicAnalyzer())
         if self.args.similarity == 'classic':
             logger.info('Use Classic similarity for lucene writer.')
             writerConfig.setSimilarity(ClassicSimilarity())
@@ -152,26 +124,51 @@ class LuceneSearch(object):
         if not self.env.isCurrentThreadAttached():
             self.env.attachCurrentThread()
 
-        if q in self.cache:
-            return self.cache[q]
-        else:
+        try:
+            q = q.replace('AND', '\\AND').replace('OR', '\\OR').replace('NOT', '\\NOT')
+            query = QueryParser("text", self.analyzer).parse(QueryParser.escape(q))
+        except Exception:
+            logger.info(f'Unexpected error when processing query: {str(q)}')
+            logger.info('Using query "dummy".')
+            q = 'dummy'
+            query = QueryParser("text", self.analyzer).parse(QueryParser.escape(q))
+
+        doc_scores, doc_titles, doc_texts, doc_words = [], [], [], []
+        hits = self.curr_searcher.search(query, self.ranker_doc_max)
+
+        for i, hit in enumerate(hits.scoreDocs):
+            doc = self.curr_searcher.doc(hit.doc)
+
+            doc_score = hit.score
+            doc_title = doc['title']
+            doc_word = doc['word'].split('<&>')
+            doc_text = doc['fulltext']
+
+            doc_scores.append(doc_score)
+            doc_titles.append(doc_title)
+            doc_words.append(doc_word)
+            doc_texts.append(doc_text)
+        return doc_scores, doc_titles, doc_texts, doc_words
+
+    def search_singlethread(self, qs, ranker_doc_max, curr_searcher):
+        out = []
+        for q in qs:
             try:
                 q = q.replace('AND', '\\AND').replace('OR', '\\OR').replace('NOT', '\\NOT')
                 query = QueryParser("text", self.analyzer).parse(QueryParser.escape(q))
             except Exception:
                 logger.info(f'Unexpected error when processing query: {str(q)}')
                 logger.info('Using query "dummy".')
-                q = 'dummy'
-                query = QueryParser("text", self.analyzer).parse(QueryParser.escape(q))
+                query = QueryParser("text", self.analyzer).parse(QueryParser.escape('dummy'))
 
             doc_scores, doc_titles, doc_texts, doc_words = [], [], [], []
-            hits = self.curr_searcher.search(query, self.ranker_doc_max)
+            hits = curr_searcher.search(query, ranker_doc_max)
 
             for i, hit in enumerate(hits.scoreDocs):
                 doc = self.curr_searcher.doc(hit.doc)
 
                 doc_score = hit.score
-                doc_title = self.id_title_map[int(doc['id'])]
+                doc_title = doc['title']
                 doc_word = doc['word'].split('<&>')
                 doc_text = doc['fulltext']
 
@@ -179,52 +176,16 @@ class LuceneSearch(object):
                 doc_titles.append(doc_title)
                 doc_words.append(doc_word)
                 doc_texts.append(doc_text)
-            return doc_scores, doc_titles, doc_texts, doc_words
 
-    def search_singlethread(self, qs, ranker_doc_max, curr_searcher):
-        out = []
-        for q in qs:
-            if q in self.cache:
-                out.append(self.cache[q])
-            else:
-                try:
-                    q = q.replace('AND', '\\AND').replace('OR', '\\OR').replace('NOT', '\\NOT')
-                    query = QueryParser("text", self.analyzer).parse(QueryParser.escape(q))
-                except Exception:
-                    logger.info(f'Unexpected error when processing query: {str(q)}')
-                    logger.info('Using query "dummy".')
-                    query = QueryParser("text", self.analyzer).parse(QueryParser.escape('dummy'))
-
-                doc_scores, doc_titles, doc_texts, doc_words = [], [], [], []
-                hits = curr_searcher.search(query, ranker_doc_max)
-
-                for i, hit in enumerate(hits.scoreDocs):
-                    doc = self.curr_searcher.doc(hit.doc)
-
-                    doc_score = hit.score
-                    doc_title = self.id_title_map[int(doc['id'])]
-                    doc_word = doc['word'].split('<&>')
-                    doc_text = doc['fulltext']
-
-                    doc_scores.append(doc_score)
-                    doc_titles.append(doc_title)
-                    doc_words.append(doc_word)
-                    doc_texts.append(doc_text)
-
-                out.append((doc_scores, doc_titles, doc_texts, doc_words))
+            out.append((doc_scores, doc_titles, doc_texts, doc_words))
 
         return out
 
-    def batch_closest_docs(self, qs, ranker_doc_max, save_cache=False):
+    def batch_closest_docs(self, qs, ranker_doc_max):
 
         if self.args.num_search_workers > 1:
             out = self.search_multithread(qs, ranker_doc_max, self.searcher)
         else:
             out = self.search_singlethread(qs, ranker_doc_max, self.searcher)
-
-        if save_cache:
-            for q, c in itertools.izip(qs, out):
-                if q not in self.cache:
-                    self.cache[q] = c
 
         return out

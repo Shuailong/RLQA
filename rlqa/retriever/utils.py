@@ -12,6 +12,7 @@ import time
 import logging
 import unicodedata
 import regex as re
+from termcolor import colored
 from collections import Counter
 
 import numpy as np
@@ -311,7 +312,9 @@ def metrics_by_content(answer, doc_pred, match='string'):
             TP += 1
 
     hit = 1 if TP > 0 else 0
-    precision = TP / len(doc_pred)
+    precision = TP / len(doc_pred) if len(doc_pred) > 0 else 0
+    if len(doc_pred) == 0:
+        logger.warning(colored('WARN: search engine returns no results.', 'yellow'))
 
     recall = F1 = MAP = -1
 

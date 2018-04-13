@@ -67,7 +67,7 @@ if __name__ == '__main__':
                         choices=['regex', 'string', 'title', 'token'])
     parser.add_argument('--similarity', type=str, default='classic', choices=['classic', 'bm25'],
                         help='lucene search similarity')
-    parser.add_argument('--index-folder', type=str, default='index-full-text',
+    parser.add_argument('--index-folder', type=str, default='index',
                         help='folder to store lucene\'s index')
 
     args = parser.parse_args()
