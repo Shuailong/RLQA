@@ -234,11 +234,12 @@ class RLDocRetriever(object):
                 #     logger.debug(colored(
                 #         f'reward delta: {reward_delta} | old: {metricss[r][i][self.args.reward]} | new: {metricss[r + 1][i][self.args.reward]}', 'yellow'))
                 # C_a
-                cost_a = -(reward_delta - reward_baselines[r][i]) * (probss[r][i].log() * selectionss[r][i]).sum()
+                cost_a = -(reward_delta - reward_baselines[r][i]) * \
+                    ((probss[r][i] + 1e-8).log() * selectionss[r][i]).sum()
                 # C_b
                 cost_b = self.args.stablize_alpha * (reward_delta - reward_baselines[r][i]) ** 2
                 # C_H
-                cost_H = -self.args.entropy_regularizer * (probss[r][i] * probss[r][i].log()).sum()
+                cost_H = -self.args.entropy_regularizer * (probss[r][i] * (probss[r][i] + 1e-8).log()).sum()
                 round_loss = cost_a + cost_b + cost_H
                 sample_loss.append(round_loss)
             sample_loss = torch.cat(sample_loss, dim=0).mean(0)
@@ -375,7 +376,8 @@ class RLDocRetriever(object):
             # reward_baseline: batch
 
             # Compute loss and accuracies
-            additional_terms, selections = self.sample_candidate_terms(candidate_terms, probs, train=train)
+            additional_terms, selections = self.sample_candidate_terms(
+                candidate_terms, probs, train=train, epsilon=self.args.term_epsilon)
 
             rewards_bl_rounds.append(reward_baseline)
             probs_rounds.append(probs)
@@ -385,10 +387,11 @@ class RLDocRetriever(object):
                          for i, doc_terms in enumerate(additional_terms)]
             question_tokens = [question_tokens[i] + doc_terms
                                for i, doc_terms in enumerate(additional_terms)]
-            # # debug
+            # debug
             # sel = np.random.randint(len(questions))
             # logger.debug(colored(f'{questions[sel]}', 'yellow') + ' | ' +
             #              colored(f'{questions[sel]}', 'blue'))
+
             results = self.search_engine.batch_closest_docs(questions, ranker_doc_max=self.args.ranker_doc_max)
             doc_scores, doc_titles, doc_texts, doc_words = zip(*results)
 
@@ -416,7 +419,7 @@ class RLDocRetriever(object):
             return doc_titles, doc_scores, questions
 
     @staticmethod
-    def sample_candidate_terms(docs, probs, train=True, epsilon=1):
+    def sample_candidate_terms(docs, probs, train=True, epsilon=0.5):
         '''
         docs: [[str]]
         probs: Tensor(batch, len)
@@ -427,7 +430,7 @@ class RLDocRetriever(object):
         if train:
             selections_var = torch.bernoulli(probs)
         else:
-            selections_var = probs > epsilon
+            selections_var = probs >= epsilon
         selections = selections_var.data.cpu().numpy()
         for i, doc in enumerate(docs):
             doc_terms = []

@@ -44,31 +44,37 @@ if __name__ == '__main__':
                         help='SQuAD-like dataset to evaluate on (txt format)')
     parser.add_argument('--model', type=str, default=None, required=True,
                         help='Path to model to use')
+    # Runtime
     parser.add_argument('--data-workers', type=int, default=5,
                         help='Number of subprocesses for data loading')
     parser.add_argument('--no-cuda', action='store_true',
                         help='Use CPU only')
     parser.add_argument('--gpu', type=int, default=-1,
                         help='Specify GPU device id to use')
+
     parser.add_argument('--batch-size', type=int, default=20,
                         help='Example batching size')
+    # RL
+    parser.add_argument('--ranker_doc_max', type=int, default=40,
+                        help='retrieve top n docs per question')
     parser.add_argument('--candidate_doc_max', type=int, default=5,
                         help='retrieve top n docs per question')
-    parser.add_argument('--ranker_doc_max', type=int, default=5,
-                        help='retrieve top n docs per question')
+    parser.add_argument('--reformulate-rounds', type=int, default=0,
+                        help='query reformulate rounds')
+    parser.add_argument('--match', type=str, default='string',
+                        choices=['regex', 'string', 'title', 'token'])
+    # Search Engine
+    parser.add_argument('--search-engine', type=str, default='lucene', choices=['lucene', 'tfidf_ranker'],
+                        help='search engine')
+    parser.add_argument('--index-folder', type=str, default='index',
+                        help='folder to store lucene\'s index')
+    parser.add_argument('--num-search-workers', type=int, default=20)
+    parser.add_argument('--ngram', type=int, default=1, help='ngram to compute similarity')
+
+    # utils
     parser.add_argument('--metrics', type=str, choices=['precision', 'recall', 'F1', 'map', 'hit'],
                         help='metrics to display when training', nargs='+',
                         default=['precision', 'hit'])
-    parser.add_argument('--reformulate-rounds', type=int, default=0,
-                        help='query reformulate rounds')
-    parser.add_argument('--search-engine', type=str, default='tfidf_ranker', choices=['lucene', 'tfidf_ranker'],
-                        help='search engine')
-    parser.add_argument('--match', type=str, default='string',
-                        choices=['regex', 'string', 'title', 'token'])
-    parser.add_argument('--similarity', type=str, default='classic', choices=['classic', 'bm25'],
-                        help='lucene search similarity')
-    parser.add_argument('--index-folder', type=str, default='index',
-                        help='folder to store lucene\'s index')
 
     args = parser.parse_args()
 

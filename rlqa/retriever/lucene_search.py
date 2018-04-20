@@ -11,21 +11,29 @@ Use Lucene to retrieve candidate documents for given a query.
 '''
 import os
 import logging
-import itertools
-import pickle
 from multiprocessing.pool import ThreadPool
 
 from tqdm import tqdm
+from termcolor import colored
 
 import lucene
+from lucene import collections
 from java.nio.file import Paths
-from org.apache.lucene.analysis.standard import ClassicAnalyzer
+from java.io import StringReader
 from org.apache.lucene.document import Document, Field, FieldType
 from org.apache.lucene.index import DirectoryReader, IndexWriter, IndexWriterConfig, IndexOptions
+from org.apache.lucene.index import Term
 from org.apache.lucene.store import MMapDirectory
-from org.apache.lucene.search import IndexSearcher, MatchAllDocsQuery
+from org.apache.lucene.store import FSDirectory
+from org.apache.lucene.search import IndexSearcher
 from org.apache.lucene.queryparser.classic import QueryParser
-from org.apache.lucene.search.similarities import BM25Similarity, ClassicSimilarity
+from org.apache.lucene.analysis import CharArraySet
+from org.apache.lucene.search import PhraseQuery
+from org.apache.lucene.search import BooleanQuery
+from org.apache.lucene.search import BooleanClause
+from org.apache.lucene.analysis.tokenattributes import CharTermAttribute
+from org.apache.lucene.search.similarities import MyTFIDFSimilarity
+from org.apache.lucene.analysis import MySimpleAnalyzer
 
 from .. import tokenizers
 from .. import DATA_DIR as RLQA_DATA
@@ -42,43 +50,32 @@ class LuceneSearch(object):
 
     def __init__(self, args):
 
-        self.env = lucene.initVM()
+        self.env = lucene.initVM(initialheap='28g', maxheap='28g', vmargs=['-Djava.awt.headless=true'])
         self.args = args
-        self.tokenizer = tokenizers.get_class(args.tokenizer)()
-        self.doc_db = DocDB()
 
         index_folder = os.path.join(DATA_DIR, args.index_folder)
         if not os.path.exists(index_folder):
+            self.doc_db = DocDB()
             logger.info(f'Creating index at {index_folder}')
-            self.create_index(index_folder, add_terms=True)
+            self.create_index(index_folder)
 
         fsDir = MMapDirectory(Paths.get(index_folder))
         self.searcher = IndexSearcher(DirectoryReader.open(fsDir))
-        if args.similarity == 'classic':
-            logger.info('Use Classic similarity for lucene searcher.')
-            self.searcher.setSimilarity(ClassicSimilarity())
-        else:
-            logger.info('Use BM25 similarity for lucene searcher.')
-            self.searcher.setSimilarity(BM25Similarity())
-        self.analyzer = ClassicAnalyzer()
+        self.searcher.setSimilarity(MyTFIDFSimilarity())
+        self.analyzer = MySimpleAnalyzer(CharArraySet(collections.JavaSet(utils.STOPWORDS), True))
         self.pool = ThreadPool(processes=args.num_search_workers)
 
 
-    def add_doc(self, doc_idx, title, txt, add_terms):
+    def add_doc(self, title, text, tokens):
 
         doc = Document()
-        doc.add(Field("id", str(doc_idx), self.t1))
         doc.add(Field("title", title, self.t1))
-        doc.add(Field("text", txt, self.t2))
-
-        if add_terms:
-            words = self.tokenizer.tokenize(utils.normalize(txt)).words(uncased=True)
-            doc.add(Field("word", '<&>'.join(words), self.t3))
-            doc.add(Field("fulltext", txt, self.t3))
+        doc.add(Field("text", text, self.t2))
+        doc.add(Field("token", tokens, self.t3))
 
         self.writer.addDocument(doc)
 
-    def create_index(self, index_folder, add_terms=False):
+    def create_index(self, index_folder):
         os.mkdir(index_folder)
 
         self.t1 = FieldType()
@@ -86,31 +83,29 @@ class LuceneSearch(object):
         self.t1.setIndexOptions(IndexOptions.DOCS)
 
         self.t2 = FieldType()
-        self.t2.setStored(False)
-        self.t2.setIndexOptions(IndexOptions.DOCS_AND_FREQS)
+        self.t2.setStored(True)
+        self.t2.setIndexOptions(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS)
 
         self.t3 = FieldType()
         self.t3.setStored(True)
         self.t3.setIndexOptions(IndexOptions.NONE)
 
         fsDir = MMapDirectory(Paths.get(index_folder))
-        writerConfig = IndexWriterConfig(ClassicAnalyzer())
-        if self.args.similarity == 'classic':
-            logger.info('Use Classic similarity for lucene writer.')
-            writerConfig.setSimilarity(ClassicSimilarity())
-        else:
-            logger.info('Use BM25 similarity for lucene writer.')
-            writerConfig.setSimilarity(BM25Similarity())
+        writerConfig = IndexWriterConfig(MySimpleAnalyzer(CharArraySet(collections.JavaSet(utils.STOPWORDS), True)))
+        writerConfig.setSimilarity(MyTFIDFSimilarity())
+        writerConfig.setRAMBufferSizeMB(16384.0)  # 14g
         self.writer = IndexWriter(fsDir, writerConfig)
         logger.info(f"{self.writer.numDocs()} docs in index")
         logger.info("Indexing documents...")
 
         doc_ids = self.doc_db.get_doc_ids()
-        for idx, doc_id in tqdm(enumerate(doc_ids), total=len(doc_ids)):
-            txt = self.doc_db.get_doc_text(doc_id)
-            self.add_doc(idx, doc_id, txt, add_terms)
+        for doc_id in tqdm(doc_ids, total=len(doc_ids)):
+            text = self.doc_db.get_doc_text(doc_id)
+            tokens = self.doc_db.get_doc_tokens(doc_id)
+            self.add_doc(doc_id, text, tokens)
 
-        logger.info(f"Index of {self.writer.numDocs()} docs...")
+        logger.info(f"Indexed {self.writer.numDocs()} docs.")
+        self.writer.forceMerge(1)  # to increase search performance
         self.writer.close()
 
     def search_multithread(self, qs, ranker_doc_max, searcher):
@@ -125,13 +120,18 @@ class LuceneSearch(object):
             self.env.attachCurrentThread()
 
         try:
-            q = q.replace('AND', '\\AND').replace('OR', '\\OR').replace('NOT', '\\NOT')
-            query = QueryParser("text", self.analyzer).parse(QueryParser.escape(q))
-        except Exception:
-            logger.info(f'Unexpected error when processing query: {str(q)}')
-            logger.info('Using query "dummy".')
-            q = 'dummy'
-            query = QueryParser("text", self.analyzer).parse(QueryParser.escape(q))
+            if self.args.ngram == 2:
+                query = self._parse_query(field_name='text', query=q)
+            else:
+                # self.args.ngram == 1
+                query = QueryParser('text', self.analyzer).parse(QueryParser.escape(q))
+        except Exception as e:
+            logger.warning(colored(f'{e}: {q}, use query dummy.'), 'yellow')
+            if self.args.ngram == 2:
+                query = self._parse_query(field_name='text', query=q)
+            else:
+                # self.args.ngram == 1
+                query = QueryParser('text', self.analyzer).parse('dummy')
 
         doc_scores, doc_titles, doc_texts, doc_words = [], [], [], []
         hits = self.curr_searcher.search(query, self.ranker_doc_max)
@@ -141,41 +141,54 @@ class LuceneSearch(object):
 
             doc_score = hit.score
             doc_title = doc['title']
-            doc_word = doc['word'].split('<&>')
-            doc_text = doc['fulltext']
+            doc_word = doc['token'].split('<&>')
+            doc_text = doc['text']
 
             doc_scores.append(doc_score)
             doc_titles.append(doc_title)
             doc_words.append(doc_word)
             doc_texts.append(doc_text)
+
+        if len(doc_scores) == 0:
+            logger.warning(colored(f'WARN: search engine returns no results for query: {q}.', 'yellow'))
+
         return doc_scores, doc_titles, doc_texts, doc_words
 
     def search_singlethread(self, qs, ranker_doc_max, curr_searcher):
         out = []
         for q in qs:
             try:
-                q = q.replace('AND', '\\AND').replace('OR', '\\OR').replace('NOT', '\\NOT')
-                query = QueryParser("text", self.analyzer).parse(QueryParser.escape(q))
-            except Exception:
-                logger.info(f'Unexpected error when processing query: {str(q)}')
-                logger.info('Using query "dummy".')
-                query = QueryParser("text", self.analyzer).parse(QueryParser.escape('dummy'))
+                if self.args.ngram == 2:
+                    query = self._parse_query(field_name='text', query=q)
+                else:
+                    # self.args.ngram == 1
+                    query = QueryParser('text', self.analyzer).parse(QueryParser.escape(q))
+            except Exception as e:
+                logger.warning(colored(f'{e}: {q}, use query dummy.'), 'yellow')
+                if self.args.ngram == 2:
+                    query = self._parse_query(field_name='text', query=q)
+                else:
+                    # self.args.ngram == 1
+                    query = QueryParser('text', self.analyzer).parse('dummy')
 
             doc_scores, doc_titles, doc_texts, doc_words = [], [], [], []
             hits = curr_searcher.search(query, ranker_doc_max)
 
             for i, hit in enumerate(hits.scoreDocs):
-                doc = self.curr_searcher.doc(hit.doc)
+                doc = curr_searcher.doc(hit.doc)
 
                 doc_score = hit.score
                 doc_title = doc['title']
-                doc_word = doc['word'].split('<&>')
-                doc_text = doc['fulltext']
+                doc_word = doc['token'].split('<&>')
+                doc_text = doc['text']
 
                 doc_scores.append(doc_score)
                 doc_titles.append(doc_title)
                 doc_words.append(doc_word)
                 doc_texts.append(doc_text)
+
+            if len(doc_scores) == 0:
+                logger.warning(colored(f'WARN: search engine returns no results for query: {q}.', 'yellow'))
 
             out.append((doc_scores, doc_titles, doc_texts, doc_words))
 
@@ -189,3 +202,24 @@ class LuceneSearch(object):
             out = self.search_singlethread(qs, ranker_doc_max, self.searcher)
 
         return out
+
+    def _parse_query(self, field_name, query):
+        ts = self.analyzer.tokenStream("dummy", StringReader(query))
+        termAtt = ts.getAttribute(CharTermAttribute.class_)
+        ts.reset()
+        tokens = []
+        while ts.incrementToken():
+            tokens.append(termAtt.toString())
+        ts.end()
+        ts.close()
+
+        booleanQuery = BooleanQuery.Builder()
+        for token in tokens:
+            builder = PhraseQuery.Builder()
+            for i, word in enumerate(token.split(' ')):
+                builder.add(Term(field_name, word), i)
+            pq = builder.build()
+            booleanQuery.add(pq, BooleanClause.Occur.SHOULD)
+        final_query = booleanQuery.build()
+        return final_query
+

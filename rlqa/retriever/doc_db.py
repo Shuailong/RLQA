@@ -8,6 +8,7 @@
 """Documents, in a sqlite database."""
 
 import sqlite3
+import os
 from . import utils
 from . import DEFAULTS
 
@@ -20,6 +21,10 @@ class DocDB(object):
 
     def __init__(self, db_path=None):
         self.path = db_path or DEFAULTS['db_path']
+        if not self.path:
+            raise IOError('DB file not specified!')
+        if not os.path.isfile(self.path):
+            raise IOError(f'No such file: {self.path}')
         self.connection = sqlite3.connect(self.path, check_same_thread=False)
 
     def __enter__(self):

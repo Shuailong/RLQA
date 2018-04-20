@@ -7,12 +7,13 @@
 # LICENSE file in the root directory of this source tree.
 """Rank documents with TF-IDF scores"""
 
+import os
 import logging
-import numpy as np
-import scipy.sparse as sp
-
 from multiprocessing.pool import ThreadPool
 from functools import partial
+
+import numpy as np
+import scipy.sparse as sp
 
 from . import utils
 from . import DEFAULTS
@@ -35,6 +36,10 @@ class TfidfDocRanker(object):
         # Load from disk
         self.args = args
         tfidf_path = tfidf_path or DEFAULTS['tfidf_path']
+        if not tfidf_path:
+            raise IOError('DB file not specified!')
+        if not os.path.isfile(tfidf_path):
+            raise IOError(f'No such file: {tfidf_path}')
         logger.info(f'Loading {tfidf_path}')
         matrix, metadata = utils.load_sparse_csr(tfidf_path)
         self.doc_mat = matrix
@@ -75,7 +80,7 @@ class TfidfDocRanker(object):
         doc_texts, doc_words = [], []
         for doc_title in doc_titles:
             doc_text = self.doc_db.get_doc_text(doc_title)
-            doc_word = self.doc_db.get_doc_tokens(doc_title)
+            doc_word = self.doc_db.get_doc_tokens(doc_title).split('<&>')
             doc_texts.append(doc_text)
             doc_words.append(doc_word)
         return doc_scores, doc_titles, doc_texts, doc_words
