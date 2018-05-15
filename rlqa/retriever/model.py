@@ -231,8 +231,7 @@ class RLDocRetriever(object):
             for r in range(self.args.reformulate_rounds):
                 reward_delta = metricss[r + 1][i][self.args.reward] - metricss[r][i][self.args.reward]
                 # if reward_delta != 0:
-                #     logger.debug(colored(
-                #         f'reward delta: {reward_delta} | old: {metricss[r][i][self.args.reward]} | new: {metricss[r + 1][i][self.args.reward]}', 'yellow'))
+                #     logger.debug(colored(f'reward delta: {reward_delta} | old: {metricss[r][i][self.args.reward]} | new: {metricss[r + 1][i][self.args.reward]}', 'yellow'))
                 # C_a
                 cost_a = -(reward_delta - reward_baselines[r][i]) * \
                     ((probss[r][i] + 1e-8).log() * selectionss[r][i]).sum()
@@ -322,11 +321,6 @@ class RLDocRetriever(object):
                 x1[i, :q.size(0)].copy_(q)
                 x1_mask[i, :q.size(0)].fill_(0)
 
-            # for i in range(len(docs_truth)):
-            #     if np.mean([r['hit'] for r in metrics]).item() == 0:
-            #         logger.debug(colored(f'{" , ".join(docs_truth[i])}', color='yellow')
-            #                      + ' | ' + f'{" , ".join(titles_pred[i])}')
-
             # pad head and tail with context window size
             pad_size = (self.args.context_window_size - 1) // 2
             if train:
@@ -371,7 +365,10 @@ class RLDocRetriever(object):
 
             # Run forward
             probs, reward_baseline = self.network(x1, x1_mask, x2, x2_mask)
-            # logger.debug(f'probs: {probs.data.cpu().numpy()[0]}')
+
+            # debug
+            # sel = np.random.randint(probs.size(0))
+            # logger.debug(f'probs: {probs[sel].data.cpu().numpy()}')
             # probs: batch * len
             # reward_baseline: batch
 
@@ -388,9 +385,8 @@ class RLDocRetriever(object):
             question_tokens = [question_tokens[i] + doc_terms
                                for i, doc_terms in enumerate(additional_terms)]
             # debug
-            # sel = np.random.randint(len(questions))
-            # logger.debug(colored(f'{questions[sel]}', 'yellow') + ' | ' +
-            #              colored(f'{questions[sel]}', 'blue'))
+            # sel = np.random.randint(len(additional_terms))
+            # logger.debug(colored(f'{additional_terms[sel]}', 'yellow'))
 
             results = self.search_engine.batch_closest_docs(questions, ranker_doc_max=self.args.ranker_doc_max)
             doc_scores, doc_titles, doc_texts, doc_words = zip(*results)

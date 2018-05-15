@@ -114,9 +114,9 @@ def add_train_args(parser):
                          help='The evaluation metric used for model selection')
     general.add_argument('--display-iter', type=int, default=25,
                          help='Log state after every <display_iter> epochs')
-    general.add_argument('--metrics', type=str, choices=['precision', 'recall', 'F1', 'map', 'hit'],
+    general.add_argument('--metrics', type=str, choices=['precision', 'recall', 'F1', 'map', 'hit', 'hit@5'],
                          help='metrics to display when training', nargs='+',
-                         default=['precision', 'hit'])
+                         default=['precision', 'hit', 'hit@5'])
 
 
 def set_defaults(args):

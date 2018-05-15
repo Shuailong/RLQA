@@ -82,7 +82,8 @@ def add_model_args(parser):
     rl_params = parser.add_argument_group('RLQA Retriever Doc Selection')
     rl_params.add_argument('--match', type=str, default='string',
                            choices=['regex', 'string', 'title', 'token'])
-    rl_params.add_argument('--reward', type=str, default='hit', choices=['precision', 'recall', 'F1', 'map', 'hit'],
+    rl_params.add_argument('--reward', type=str, default='precision',
+                           choices=['precision', 'recall', 'F1', 'map', 'hit', 'hit@5'],
                            help='reward to train the reformulator')
     rl_params.add_argument('--candidate-term-max', type=int, default=300,
                            help='First M words to select from the candidate doc')

@@ -72,9 +72,9 @@ if __name__ == '__main__':
     parser.add_argument('--ngram', type=int, default=1, help='ngram to compute similarity')
 
     # utils
-    parser.add_argument('--metrics', type=str, choices=['precision', 'recall', 'F1', 'map', 'hit'],
+    parser.add_argument('--metrics', type=str, choices=['precision', 'recall', 'F1', 'map', 'hit', 'hit@5'],
                         help='metrics to display when training', nargs='+',
-                        default=['precision', 'hit'])
+                        default=['precision', 'hit', 'hit@5'])
 
     args = parser.parse_args()
 

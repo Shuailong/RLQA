@@ -249,17 +249,21 @@ def metrics_by_content(answer, doc_pred, match='string'):
                 return True
         return False
 
-    TP = 0
-    for doc in doc_pred:
+    TP_5, TP = 0, 0
+    for i, doc in enumerate(doc_pred):
         if has_answer(answer, doc, match):
             TP += 1
+            if i < 5:
+                TP_5 += 1
 
+    hit_5 = 1 if TP_5 > 0 else 0
     hit = 1 if TP > 0 else 0
     precision = TP / len(doc_pred) if len(doc_pred) > 0 else 0
 
     recall = F1 = MAP = -1
 
-    metrics = {'precision': precision, 'recall': recall, 'F1': F1, 'map': MAP, 'hit': hit}
+    metrics = {'precision': precision, 'recall': recall, 'F1': F1,
+               'map': MAP, 'hit@5': hit_5, 'hit': hit}
     return metrics
 
 

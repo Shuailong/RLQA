@@ -24,7 +24,7 @@ from org.apache.lucene.document import Document, Field, FieldType
 from org.apache.lucene.index import DirectoryReader, IndexWriter, IndexWriterConfig, IndexOptions
 from org.apache.lucene.index import Term
 from org.apache.lucene.store import MMapDirectory
-from org.apache.lucene.store import FSDirectory
+from org.apache.lucene.store import FSDirectory, NIOFSDirectory
 from org.apache.lucene.search import IndexSearcher
 from org.apache.lucene.queryparser.classic import QueryParser
 from org.apache.lucene.analysis import CharArraySet
