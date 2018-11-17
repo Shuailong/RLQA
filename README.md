@@ -6,12 +6,12 @@ Query expansion/reformulation based QA: Given a question, search it in a search 
 
 ### Models
 1. Query reformulation with RL
-![reformulator](pic/reformulator.png)
+<p align="left"><img src="pic/reformulator.png" width="400" alt="reformulator"></p>
+
 2. Ask the right questions
-![ask](pic/ask.png)
+<p align="left"><img src="pic/ask.png" width="400" alt="activeQA"></p>
 
 ### Reinforcement Learning Framework
-
 - State: current words in the query
 - Action: select a word to expand the query
 - Reward: recall@K
